@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "剧迹 - VideoTracker"
+  },
+  "extensionShortName": {
+    "message": "剧迹"
+  },
+  "extensionDescription": {
+    "message": "记录连续剧的观看集数与分钟进度，并通过浏览器账户在设备间同步。"
+  },
+  "actionTitle": {
+    "message": "追踪当前剧集"
+  }
+}

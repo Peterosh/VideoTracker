@@ -196,6 +196,9 @@ function createHarness(options) {
   };
   context.globalThis = context;
   context.self.VideoTrackerCore = Core;
+  context.self.VideoTrackerI18n = {
+    t: (value) => value
+  };
   context.importScripts = () => {};
   vm.createContext(context);
 

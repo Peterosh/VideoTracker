@@ -139,9 +139,7 @@
             <span class="icon" data-icon="x" data-icon-size="18"></span>
           </button>
         </div>
-        <p class="dialog-copy">
-          确定删除“<strong id="deleteName"></strong>”的观看记录？此操作不可撤销。
-        </p>
+        <p class="dialog-copy" id="deleteCopy"></p>
         <p class="form-error" id="deleteError" role="alert" hidden></p>
         <div class="dialog-actions">
           <button class="button button-secondary" type="button" data-close-dialog="deleteDialog">
@@ -158,6 +156,7 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="core.js"></script>
+    <script src="i18n.js"></script>
     <script src="icons.js"></script>
     <script src="device-profile.js"></script>
     <script src="popup.js"></script>

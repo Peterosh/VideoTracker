@@ -176,7 +176,7 @@ async function main() {
     });
     const context = await browser.newContext({
       deviceScaleFactor: 1,
-      viewport: { height: 820, width: 1280 }
+      viewport: { height: 800, width: 1280 }
     });
     const page = await context.newPage();
     await page.addInitScript((libraryState) => {

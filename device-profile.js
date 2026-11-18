@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "vt.deviceProfile.v1";
+  const NETWORK_INFO_KEY = "vt.networkInfoEnabled";
   const NETWORK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   const PUBLIC_IP_PROVIDERS = [
     {
@@ -37,7 +38,9 @@
     const raw =
       (navigator.userAgentData && navigator.userAgentData.platform) ||
       navigator.platform ||
-      "未知平台";
+      (root.VideoTrackerI18n
+        ? root.VideoTrackerI18n.t("未知平台")
+        : "Unknown platform");
     if (/win/i.test(raw)) {
       return "Windows";
     }
@@ -195,6 +198,32 @@
     return result[STORAGE_KEY] || null;
   }
 
+  async function getNetworkInfoEnabled() {
+    const result = await getStorage(NETWORK_INFO_KEY);
+    return Boolean(result[NETWORK_INFO_KEY]);
+  }
+
+  async function setNetworkInfoEnabled(enabled) {
+    const value = Boolean(enabled);
+    await setStorage({ [NETWORK_INFO_KEY]: value });
+    if (value) {
+      return ensure({ refreshNetwork: true });
+    }
+
+    const existing = (await readProfile()) || (await ensure());
+    const profile = {
+      ...existing,
+      localIp: "",
+      networkUpdatedAt: 0,
+      publicIp: "",
+      publicIpProvider: "",
+      publicIpUpdatedAt: 0,
+      updatedAt: Date.now()
+    };
+    await setStorage({ [STORAGE_KEY]: profile });
+    return profile;
+  }
+
   async function ensure(options) {
     const settings = options || {};
     const existing = await readProfile();
@@ -202,30 +231,33 @@
     const platform = detectPlatform();
     const defaultName = `${browser} · ${platform}`;
     const now = Date.now();
+    const networkInfoEnabled = await getNetworkInfoEnabled();
     const shouldRefreshLocalIp =
-      settings.refreshNetwork ||
+      networkInfoEnabled &&
+      (settings.refreshNetwork ||
       !existing ||
       !existing.localIp ||
-      now - Number(existing.networkUpdatedAt || 0) > NETWORK_MAX_AGE_MS;
+      now - Number(existing.networkUpdatedAt || 0) > NETWORK_MAX_AGE_MS);
     const shouldRefreshPublicIp =
-      settings.refreshNetwork ||
+      networkInfoEnabled &&
+      (settings.refreshNetwork ||
       !existing ||
       !existing.publicIp ||
-      now - Number(existing.publicIpUpdatedAt || 0) > NETWORK_MAX_AGE_MS;
+      now - Number(existing.publicIpUpdatedAt || 0) > NETWORK_MAX_AGE_MS);
     const [localIp, publicIpResult] = await Promise.all([
-      shouldRefreshLocalIp ? detectLocalIp() : existing.localIp,
+      shouldRefreshLocalIp ? detectLocalIp() : existing && existing.localIp,
       shouldRefreshPublicIp
         ? detectPublicIp()
         : Promise.resolve({
-            address: existing.publicIp,
-            provider: existing.publicIpProvider || ""
+            address: existing && existing.publicIp,
+            provider: (existing && existing.publicIpProvider) || ""
           })
     ]);
     const profile = {
       browser,
       customName: Boolean(existing && existing.customName),
       id: (existing && existing.id) || createDeviceId(),
-      localIp: localIp || "",
+      localIp: networkInfoEnabled ? localIp || "" : "",
       name:
         existing && existing.customName
           ? existing.name
@@ -233,13 +265,15 @@
       nameUpdatedAt: Number(existing && existing.nameUpdatedAt) || 0,
       networkUpdatedAt: shouldRefreshLocalIp
         ? now
-        : existing.networkUpdatedAt,
+        : existing && existing.networkUpdatedAt,
       platform,
-      publicIp: publicIpResult.address || "",
-      publicIpProvider: publicIpResult.provider || "",
-      publicIpUpdatedAt: shouldRefreshPublicIp
+      publicIp: networkInfoEnabled ? publicIpResult.address || "" : "",
+      publicIpProvider: networkInfoEnabled
+        ? publicIpResult.provider || ""
+        : "",
+      publicIpUpdatedAt: networkInfoEnabled && shouldRefreshPublicIp
         ? now
-        : existing.publicIpUpdatedAt,
+        : existing && existing.publicIpUpdatedAt,
       updatedAt: now
     };
     await setStorage({ [STORAGE_KEY]: profile });
@@ -261,7 +295,9 @@
 
   root.VideoTrackerDeviceProfile = Object.freeze({
     ensure,
+    getNetworkInfoEnabled,
     read: readProfile,
-    rename
+    rename,
+    setNetworkInfoEnabled
   });
 })(typeof globalThis !== "undefined" ? globalThis : this);

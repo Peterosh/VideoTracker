@@ -2,6 +2,7 @@
   "use strict";
 
   const Core = globalThis.VideoTrackerCore;
+  const I18n = globalThis.VideoTrackerI18n;
   const iconPaths = globalThis.VideoTrackerIconPaths || {};
   const state = {
     deleteId: null,
@@ -20,9 +21,9 @@
   const elements = {
     currentContent: document.getElementById("currentContent"),
     deleteDialog: document.getElementById("deleteDialog"),
+    deleteCopy: document.getElementById("deleteCopy"),
     deleteError: document.getElementById("deleteError"),
     deleteForm: document.getElementById("deleteForm"),
-    deleteName: document.getElementById("deleteName"),
     editAuto: document.getElementById("editAuto"),
     editDialog: document.getElementById("editDialog"),
     editEpisode: document.getElementById("editEpisode"),
@@ -141,7 +142,9 @@
     if (busy) {
       button.dataset.originalLabel = button.innerHTML;
       button.disabled = true;
-      button.innerHTML = `${iconMarkup("loader-circle", 17)}<span>${escapeHtml(busyLabel || "处理中")}</span>`;
+      button.innerHTML = `${iconMarkup("loader-circle", 17)}<span>${escapeHtml(
+        I18n.t(busyLabel || "处理中")
+      )}</span>`;
       return;
     }
 
@@ -176,23 +179,25 @@
     elements.syncState.classList.toggle("is-local", failed);
     elements.syncState.classList.toggle("is-warning", !synced && !failed);
     elements.syncLabel.textContent = synced
-      ? "本地云端已对齐"
+      ? I18n.t("本地云端已对齐")
       : failed
-        ? "同步失败"
-        : "本地未同步";
+        ? I18n.t("同步失败")
+        : I18n.t("本地未同步");
     elements.syncState.setAttribute(
       "aria-label",
-      synced
-        ? "本地存储和云端存储已同步"
-        : failed
-          ? "浏览器同步存储不可用"
-          : "本地记录尚未同步到云端"
+      I18n.t(
+        synced
+          ? "本地存储和云端存储已同步"
+          : failed
+            ? "浏览器同步存储不可用"
+            : "本地记录尚未同步到云端"
+      )
     );
     elements.syncState.title = synced
-      ? "本地存储与云端存储已对齐"
+      ? I18n.t("本地存储与云端存储已对齐")
       : failed
-        ? sync.error || "浏览器同步存储不可用"
-        : `有 ${pending} 条本地记录尚未上传`;
+        ? sync.error || I18n.t("浏览器同步存储不可用")
+        : I18n.t("有 {pending} 条本地记录尚未上传", { pending });
   }
 
   function updatePlaybackState() {
@@ -210,11 +215,11 @@
     elements.playbackState.classList.toggle("is-ended", Boolean(snapshot.ended));
 
     if (snapshot.ended) {
-      elements.playbackText.textContent = "已播完";
+      elements.playbackText.textContent = I18n.t("已播完");
     } else if (snapshot.paused) {
-      elements.playbackText.textContent = "已暂停";
+      elements.playbackText.textContent = I18n.t("已暂停");
     } else {
-      elements.playbackText.textContent = "播放中";
+      elements.playbackText.textContent = I18n.t("播放中");
     }
   }
 
@@ -263,6 +268,7 @@
         </button>
       </div>
     `;
+    I18n.localize(elements.currentContent);
   }
 
   function renderWaitingCurrent(snapshot) {
@@ -277,6 +283,7 @@
         </button>
       </div>
     `;
+    I18n.localize(elements.currentContent);
   }
 
   function renderActiveCurrent(snapshot, record) {
@@ -284,6 +291,7 @@
       record && record.episodeSource === "manual"
         ? record.episodeLabel
         : snapshot.episodeLabel || (record && record.episodeLabel) || "集数待识别";
+    const displayEpisode = I18n.episodeLabel(episodeLabel);
     const duration = snapshot.duration || (record && record.duration) || 0;
     const position = snapshot.currentTime;
     const name = (record && record.name) || snapshot.title || "当前视频";
@@ -294,8 +302,8 @@
           type="button"
           data-action="edit"
           data-id="${escapeAttr(record.id)}"
-          aria-label="编辑${escapeAttr(name)}"
-          title="编辑记录"
+          aria-label="${escapeAttr(I18n.t("编辑{name}", { name }))}"
+          title="${escapeAttr(I18n.t("编辑记录"))}"
         >
           ${iconMarkup("pencil", 17)}
         </button>
@@ -305,7 +313,9 @@
     elements.currentContent.innerHTML = `
       <div class="active-summary">
         <div class="title-line">
-          <span class="site-badge">${escapeHtml(snapshot.siteLabel || "网页视频")}</span>
+          <span class="site-badge">${escapeHtml(
+            I18n.siteLabel(snapshot.siteLabel || "网页视频")
+          )}</span>
           <span class="tracking-badge">
             ${iconMarkup("check", 13)}
             <span>追踪中</span>
@@ -314,7 +324,7 @@
         <h1 class="video-title">${escapeHtml(name)}</h1>
         <div class="active-meta">
           <div class="episode-stack">
-            <strong>${escapeHtml(episodeLabel)}</strong>
+            <strong>${escapeHtml(displayEpisode)}</strong>
             <span>
               已看
               <span data-live-time>${escapeHtml(liveTimeText(snapshot))}</span>
@@ -331,6 +341,7 @@
         </div>
       </div>
     `;
+    I18n.localize(elements.currentContent);
   }
 
   function renderStartForm(snapshot) {
@@ -342,7 +353,9 @@
     elements.currentContent.innerHTML = `
       <form class="track-form" id="trackForm" novalidate>
         <div class="title-line">
-          <span class="site-badge">${escapeHtml(snapshot.siteLabel || "网页视频")}</span>
+          <span class="site-badge">${escapeHtml(
+            I18n.siteLabel(snapshot.siteLabel || "网页视频")
+          )}</span>
           <span class="live-time">
             ${iconMarkup("clock", 14)}
             <span data-live-time>${escapeHtml(liveTimeText(snapshot))}</span>
@@ -367,7 +380,7 @@
               name="episode"
               maxlength="40"
               autocomplete="off"
-              value="${escapeAttr(episode)}"
+              value="${escapeAttr(I18n.episodeLabel(episode))}"
               data-detected-episode="${escapeAttr(episode)}"
               placeholder="待识别"
             >
@@ -395,6 +408,7 @@
         <p class="form-error" id="trackError" role="alert" hidden></p>
       </form>
     `;
+    I18n.localize(elements.currentContent);
   }
 
   function renderCurrent() {
@@ -440,7 +454,9 @@
   }
 
   function renderLibrary() {
-    elements.libraryCount.textContent = `${state.records.length} 部`;
+    elements.libraryCount.textContent = I18n.t("{count} 部", {
+      count: state.records.length
+    });
 
     if (!state.records.length) {
       elements.libraryContent.innerHTML = `
@@ -449,6 +465,7 @@
           <span>还没有追踪记录</span>
         </div>
       `;
+      I18n.localize(elements.libraryContent);
       return;
     }
 
@@ -457,7 +474,9 @@
       .map((record) => {
         const progress = Core.calculateProgress(record.position, record.duration);
         const positionLabel = Core.formatTime(record.position);
-        const episodeLabel = record.episodeLabel || "集数待识别";
+        const episodeLabel = I18n.episodeLabel(
+          record.episodeLabel || I18n.t("集数待识别")
+        );
         const isCurrent = record.id === activeId;
         return `
           <article class="show-row">
@@ -471,8 +490,10 @@
               type="button"
               data-action="open"
               data-id="${escapeAttr(record.id)}"
-              aria-label="打开${escapeAttr(record.name)}"
-              title="打开上次观看页面"
+              aria-label="${escapeAttr(
+                I18n.t("打开{name}", { name: record.name })
+              )}"
+              title="${escapeAttr(I18n.t("打开上次观看页面"))}"
             >
               <span class="show-name-line">
                 <span class="show-name">${escapeHtml(record.name)}</span>
@@ -481,7 +502,9 @@
               <span class="show-meta">
                 <span class="episode">${escapeHtml(episodeLabel)}</span>
                 <span class="meta-separator">·</span>
-                <span>看到 ${escapeHtml(positionLabel)}</span>
+                <span>${escapeHtml(
+                  I18n.t("看到 {time}", { time: positionLabel })
+                )}</span>
                 <span class="meta-separator">·</span>
                 <span>${Math.round(progress)}%</span>
               </span>
@@ -492,8 +515,10 @@
               type="button"
               data-action="edit"
               data-id="${escapeAttr(record.id)}"
-              aria-label="编辑${escapeAttr(record.name)}"
-              title="编辑记录"
+              aria-label="${escapeAttr(
+                I18n.t("编辑{name}", { name: record.name })
+              )}"
+              title="${escapeAttr(I18n.t("编辑记录"))}"
             >
               ${iconMarkup("pencil", 16)}
             </button>
@@ -502,8 +527,10 @@
               type="button"
               data-action="delete"
               data-id="${escapeAttr(record.id)}"
-              aria-label="删除${escapeAttr(record.name)}"
-              title="删除记录"
+              aria-label="${escapeAttr(
+                I18n.t("删除{name}", { name: record.name })
+              )}"
+              title="${escapeAttr(I18n.t("删除记录"))}"
             >
               ${iconMarkup("trash-2", 16)}
             </button>
@@ -513,12 +540,14 @@
       .join("");
 
     elements.libraryContent.innerHTML = `<div class="library-list">${rows}</div>`;
+    I18n.localize(elements.libraryContent);
   }
 
   function renderAll() {
     updateSyncState();
     renderCurrent();
     renderLibrary();
+    I18n.localize(document);
   }
 
   function updateLiveDetails(snapshot) {
@@ -592,7 +621,7 @@
     });
 
     if (!appState.ok) {
-      throw new Error(appState.error || "无法读取追踪记录");
+      throw new Error(appState.error || I18n.t("无法读取追踪记录"));
     }
 
     state.records = Array.isArray(appState.records) ? appState.records : [];
@@ -633,7 +662,7 @@
       await refreshApp({ refreshSnapshot: true });
     } catch (error) {
       state.loading = false;
-      showToast(error.message || "扩展初始化失败", true);
+      showToast(error.message || I18n.t("扩展初始化失败"), true);
       renderAll();
     }
   }
@@ -648,16 +677,22 @@
 
     showInlineError(errorElement, "");
     if (!name) {
-      showInlineError(errorElement, "请填写剧名");
+      showInlineError(errorElement, I18n.t("请填写剧名"));
       nameInput.focus();
       return;
     }
 
     setButtonBusy(button, true, "正在开始");
     const detected = Core.normalizeText(episodeInput.dataset.detectedEpisode);
+    const detectedDisplay = Core.normalizeText(
+      I18n.episodeLabel(detected)
+    );
     const response = await sendRuntime({
       episodeLabel,
-      episodeSource: episodeLabel === detected ? "auto" : "manual",
+      episodeSource:
+        episodeLabel === detected || episodeLabel === detectedDisplay
+          ? "auto"
+          : "manual",
       name,
       tabId: state.tabId,
       type: "VT_START_TRACKING"
@@ -665,12 +700,16 @@
 
     if (!response.ok) {
       setButtonBusy(button, false);
-      showInlineError(errorElement, response.error || "无法开始追踪");
+      showInlineError(errorElement, response.error || I18n.t("无法开始追踪"));
       return;
     }
 
     await refreshApp({ refreshSnapshot: true });
-    showToast(response.deferredSync ? "已记录，当前保存在本机" : "已开始追踪");
+    showToast(
+      I18n.t(
+        response.deferredSync ? "已记录，当前保存在本机" : "已开始追踪"
+      )
+    );
   }
 
   async function stopTracking(button) {
@@ -682,24 +721,24 @@
 
     if (!response.ok) {
       setButtonBusy(button, false);
-      showToast(response.error || "无法停止追踪", true);
+      showToast(response.error || I18n.t("无法停止追踪"), true);
       return;
     }
 
     await refreshApp({ refreshSnapshot: true });
-    showToast("已停止追踪，记录已保留");
+    showToast(I18n.t("已停止追踪，记录已保留"));
   }
 
   async function openRecord(recordId) {
     const record = state.records.find((item) => item.id === recordId);
     if (!record || !record.url) {
-      showToast("这条记录没有可打开的页面", true);
+      showToast(I18n.t("这条记录没有可打开的页面"), true);
       return;
     }
 
     const tab = await createTab(record.url);
     if (!tab) {
-      showToast("无法打开观看页面", true);
+      showToast(I18n.t("无法打开观看页面"), true);
       return;
     }
     window.close();
@@ -729,7 +768,10 @@
     }
 
     state.deleteId = record.id;
-    elements.deleteName.textContent = record.name;
+    elements.deleteCopy.textContent = I18n.t(
+      "确定删除“{name}”的观看记录？此操作不可撤销。",
+      { name: record.name }
+    );
     setButtonBusy(document.getElementById("deleteConfirm"), false);
     showInlineError(elements.deleteError, "");
     elements.deleteDialog.showModal();
@@ -739,7 +781,7 @@
     event.preventDefault();
     const name = Core.normalizeText(elements.editName.value);
     if (!name) {
-      showInlineError(elements.editError, "请填写剧名");
+      showInlineError(elements.editError, I18n.t("请填写剧名"));
       elements.editName.focus();
       return;
     }
@@ -765,14 +807,16 @@
 
     if (!response.ok) {
       setButtonBusy(saveButton, false);
-      showInlineError(elements.editError, response.error || "保存失败");
+      showInlineError(elements.editError, response.error || I18n.t("保存失败"));
       return;
     }
 
     setButtonBusy(saveButton, false);
     elements.editDialog.close();
     await refreshApp({ refreshSnapshot: false });
-    showToast(response.deferredSync ? "已保存到本机" : "记录已更新");
+    showToast(
+      I18n.t(response.deferredSync ? "已保存到本机" : "记录已更新")
+    );
   }
 
   async function confirmDelete(event) {
@@ -786,14 +830,14 @@
 
     if (!response.ok) {
       setButtonBusy(button, false);
-      showInlineError(elements.deleteError, response.error || "删除失败");
+      showInlineError(elements.deleteError, response.error || I18n.t("删除失败"));
       return;
     }
 
     setButtonBusy(button, false);
     elements.deleteDialog.close();
     await refreshApp({ refreshSnapshot: false });
-    showToast("记录已删除");
+    showToast(I18n.t("记录已删除"));
   }
 
   async function retryDetection() {
@@ -805,7 +849,7 @@
     renderCurrent();
     updatePlaybackState();
     if (!snapshot) {
-      showToast("当前页面无法读取视频", true);
+      showToast(I18n.t("当前页面无法读取视频"), true);
     }
   }
 
@@ -901,6 +945,7 @@
   }
 
   hydrateIcons(document);
+  I18n.localize(document);
   bindEvents();
   loadInitial();
 

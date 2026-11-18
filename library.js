@@ -2,6 +2,7 @@
   "use strict";
 
   const Core = globalThis.VideoTrackerCore;
+  const I18n = globalThis.VideoTrackerI18n;
   const iconPaths = globalThis.VideoTrackerIconPaths || {};
   const state = {
     device: null,
@@ -24,6 +25,7 @@
     detailPanel: document.getElementById("detailPanel"),
     deviceCount: document.getElementById("deviceCount"),
     deviceList: document.getElementById("deviceList"),
+    networkInfoToggle: document.getElementById("networkInfoToggle"),
     deleteDialog: document.getElementById("deleteDialog"),
     deleteError: document.getElementById("deleteError"),
     deleteForm: document.getElementById("deleteForm"),
@@ -118,7 +120,7 @@
     if (!timestamp) {
       return "暂无记录";
     }
-    return new Intl.DateTimeFormat("zh-CN", {
+    return new Intl.DateTimeFormat(I18n.locale, {
       day: "2-digit",
       hour: "2-digit",
       hour12: false,
@@ -131,11 +133,13 @@
   function formatTotalDuration(seconds) {
     const totalMinutes = Math.max(0, Math.round((Number(seconds) || 0) / 60));
     if (totalMinutes < 60) {
-      return `${totalMinutes} 分钟`;
+      return I18n.t("{minutes} 分钟", { minutes: totalMinutes });
     }
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    return minutes ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
+    return minutes
+      ? I18n.t("{hours} 小时 {minutes} 分", { hours, minutes })
+      : I18n.t("{hours} 小时", { hours });
   }
 
   function isComplete(episode) {
@@ -197,35 +201,38 @@
     elements.syncState.classList.toggle("is-local", !synced);
     elements.syncState.classList.toggle("is-warning", !synced && !failed);
     elements.syncLabel.textContent = synced
-      ? "本地云端已对齐"
+      ? I18n.t("本地云端已对齐")
       : failed
-        ? "同步失败"
-        : "本地未同步";
+        ? I18n.t("同步失败")
+        : I18n.t("本地未同步");
     elements.syncStateText.textContent = synced
-      ? "本地与云端已对齐"
+      ? I18n.t("本地与云端已对齐")
       : failed
-        ? "本地与云端未对齐"
-        : "正在等待同步";
+        ? I18n.t("本地与云端未对齐")
+        : I18n.t("正在等待同步");
     elements.syncResultBadge.textContent = synced
-      ? "已同步"
+      ? I18n.t("已同步")
       : failed
-        ? "同步失败"
-        : "未同步";
+        ? I18n.t("同步失败")
+        : I18n.t("未同步");
     elements.syncResultBadge.className = `sync-result${
       synced ? " is-ok" : failed ? " is-error" : ""
     }`;
     elements.syncSummary.textContent = failed
-      ? syncState.error || "无法访问浏览器同步存储"
-      : `云端 ${cloudShows} 部剧、${cloudEpisodes} 集记录；本地待上传 ${pending} 条。`;
+      ? syncState.error || I18n.t("无法访问浏览器同步存储")
+      : I18n.t(
+          "云端 {shows} 部剧、{episodes} 集记录；本地待上传 {pending} 条。",
+          { episodes: cloudEpisodes, pending, shows: cloudShows }
+        );
     elements.syncLastTime.textContent = syncState.lastSyncAt
-      ? Core.formatRelativeTime(syncState.lastSyncAt)
-      : "尚未同步";
+      ? I18n.relativeTime(syncState.lastSyncAt)
+      : I18n.t("尚未同步");
     elements.syncExtensionId.textContent = chrome.runtime.id || "";
     elements.syncState.title = synced
-      ? "本地存储与浏览器同步存储已对齐"
+      ? I18n.t("本地存储与浏览器同步存储已对齐")
       : failed
-        ? syncState.error || "浏览器同步存储不可用"
-        : `有 ${pending} 条本地记录尚未上传`;
+        ? syncState.error || I18n.t("浏览器同步存储不可用")
+        : I18n.t("有 {pending} 条本地记录尚未上传", { pending });
   }
 
   function renderDeviceList() {
@@ -237,22 +244,31 @@
     elements.deviceCount.textContent = String(devices.length);
     if (!devices.length) {
       elements.deviceList.innerHTML =
-        '<p class="device-list-empty">暂无设备信息</p>';
+        `<p class="device-list-empty">${escapeHtml(
+          I18n.t("暂无设备信息")
+        )}</p>`;
+      I18n.localize(elements.deviceList);
       return;
     }
 
     elements.deviceList.innerHTML = devices
       .map((device) => {
         const network = [
-          device.localIp ? `局域网 ${device.localIp}` : "局域网未知",
-          device.publicIp ? `公网 ${device.publicIp}` : "公网未知"
+          device.localIp
+            ? I18n.t("局域网 {ip}", { ip: device.localIp })
+            : I18n.t("局域网未知"),
+          device.publicIp
+            ? I18n.t("公网 {ip}", { ip: device.publicIp })
+            : I18n.t("公网未知")
         ].join(" · ");
         const meta = [
           device.browser,
           device.platform,
           network,
           device.lastSeenAt
-            ? `在线 ${Core.formatRelativeTime(device.lastSeenAt)}`
+            ? I18n.t("在线 {time}", {
+                time: I18n.relativeTime(device.lastSeenAt)
+              })
             : ""
         ]
           .filter(Boolean)
@@ -265,11 +281,21 @@
                 <input
                   type="text"
                   maxlength="60"
-                  value="${escapeAttr(device.name || "未命名设备")}"
+                  value="${escapeAttr(device.name || I18n.t("未命名设备"))}"
                   data-device-name="${escapeAttr(device.id)}"
-                  aria-label="编辑${escapeAttr(device.name || "设备")}名称"
+                  aria-label="${escapeAttr(
+                    I18n.t("编辑{name}名称", {
+                      name: device.name || I18n.t("设备")
+                    })
+                  )}"
                 >
-                ${device.current ? '<span class="device-current-badge">当前</span>' : ""}
+                ${
+                  device.current
+                    ? `<span class="device-current-badge">${escapeHtml(
+                        I18n.t("当前")
+                      )}</span>`
+                    : ""
+                }
               </div>
               <p class="device-row-meta" title="${escapeAttr(meta)}">${escapeHtml(meta)}</p>
             </div>
@@ -277,6 +303,7 @@
         `;
       })
       .join("");
+    I18n.localize(elements.deviceList);
   }
 
   function renderShows() {
@@ -293,6 +320,7 @@
           </div>
         </div>
       `;
+      I18n.localize(elements.showsList);
       return;
     }
 
@@ -302,6 +330,7 @@
           <span>没有匹配的剧集</span>
         </div>
       `;
+      I18n.localize(elements.showsList);
       return;
     }
 
@@ -324,8 +353,12 @@
             <span class="show-copy">
               <span class="show-name">${escapeHtml(show.name)}</span>
               <span class="show-meta">
-                ${escapeHtml(show.episodeLabel || "集数待识别")}
-                · ${episodes.length} 集记录
+                ${escapeHtml(
+                  I18n.episodeLabel(show.episodeLabel || "集数待识别")
+                )}
+                · ${escapeHtml(
+                  I18n.t("{count} 集记录", { count: episodes.length })
+                )}
               </span>
             </span>
             <span class="chevron">${iconMarkup("chevron-right", 16)}</span>
@@ -333,6 +366,7 @@
         `;
       })
       .join("");
+    I18n.localize(elements.showsList);
   }
 
   function episodeStatus(episode) {
@@ -340,12 +374,12 @@
       ? {
           className: "is-complete",
           icon: "circle-check",
-          label: "已看完"
+          label: I18n.t("已看完")
         }
       : {
           className: "",
           icon: "play",
-          label: "观看中"
+          label: I18n.t("观看中")
         };
   }
 
@@ -355,15 +389,19 @@
     const positionLabel = Core.formatTime(episode.position);
     const durationLabel = episode.duration
       ? Core.formatTime(episode.duration)
-      : "未知";
+      : I18n.t("未知");
     const openButton = episode.url
       ? `
         <button
           class="icon-button"
           type="button"
           data-open-url="${escapeAttr(episode.url)}"
-          aria-label="打开${escapeAttr(episode.episodeLabel || "本集")}"
-          title="打开观看页面"
+          aria-label="${escapeAttr(
+            I18n.t("打开{episode}", {
+              episode: I18n.episodeLabel(episode.episodeLabel || "本集")
+            })
+          )}"
+          title="${escapeAttr(I18n.t("打开观看页面"))}"
         >
           ${iconMarkup("external-link", 17)}
         </button>
@@ -377,29 +415,39 @@
         data-episode-show-id="${escapeAttr(episode.showId)}"
         data-episode-label="${escapeAttr(episode.episodeLabel || "本集")}"
         data-episode-storage-key="${escapeAttr(episode.storageKey || "")}"
-        aria-label="删除${escapeAttr(episode.episodeLabel || "本集")}记录"
-        title="删除分集记录"
+        aria-label="${escapeAttr(
+          I18n.t("删除{episode}记录", {
+            episode: I18n.episodeLabel(episode.episodeLabel || "本集")
+          })
+        )}"
+        title="${escapeAttr(I18n.t("删除分集记录"))}"
       >
         ${iconMarkup("trash-2", 16)}
       </button>
     `;
-    const deviceName = episode.deviceName || "历史记录";
-    const deviceIp = episode.deviceIp || "局域网 IP 未记录";
+    const deviceName = episode.deviceName || I18n.t("历史记录");
+    const deviceIp = episode.deviceIp || I18n.t("局域网 IP 未记录");
     const devicePublicIp = episode.devicePublicIp
-      ? `公网 ${episode.devicePublicIp}`
-      : "公网 IP 未记录";
+      ? I18n.t("公网 {ip}", { ip: episode.devicePublicIp })
+      : I18n.t("公网 IP 未记录");
 
     return `
       <article class="episode-row">
         <div class="episode-identity">
-          <h4>${escapeHtml(episode.episodeLabel || "集数待识别")}</h4>
+          <h4>${escapeHtml(
+            I18n.episodeLabel(episode.episodeLabel || "集数待识别")
+          )}</h4>
           <span>${escapeHtml(episode.pageTitle || "")}</span>
         </div>
         <div class="episode-progress">
           <div
             class="progress-track"
             role="progressbar"
-            aria-label="${escapeAttr(episode.episodeLabel || "本集")}观看进度"
+            aria-label="${escapeAttr(
+              I18n.t("{name}观看进度", {
+                name: I18n.episodeLabel(episode.episodeLabel || "本集")
+              })
+            )}"
             aria-valuemin="0"
             aria-valuemax="100"
             aria-valuenow="${progress}"
@@ -441,7 +489,8 @@
           </div>
         </div>
       `;
-      document.title = "观看记录 - 剧迹";
+      document.title = I18n.t("观看记录 - 剧迹");
+      I18n.localize(elements.detailPanel);
       return;
     }
 
@@ -465,11 +514,19 @@
       <header class="detail-header">
         <div class="detail-title-row">
           <div class="detail-title-copy">
-            <p class="eyebrow">${escapeHtml(show.siteLabel || "网页视频")}</p>
+            <p class="eyebrow">${escapeHtml(
+              I18n.siteLabel(show.siteLabel || "网页视频")
+            )}</p>
             <h2>${escapeHtml(show.name)}</h2>
             <p class="detail-subtitle">
-              ${escapeHtml(show.episodeLabel || "集数待识别")}
-              · 最近观看 ${escapeHtml(Core.formatRelativeTime(show.updatedAt))}
+              ${escapeHtml(
+                I18n.episodeLabel(show.episodeLabel || "集数待识别")
+              )}
+              · ${escapeHtml(
+                I18n.t("最近观看 {time}", {
+                  time: I18n.relativeTime(show.updatedAt)
+                })
+              )}
             </p>
           </div>
           <div class="detail-actions">
@@ -527,7 +584,8 @@
       </div>
     `;
 
-    document.title = `${show.name} - 剧迹`;
+    document.title = I18n.t("{show} - 剧迹", { show: show.name });
+    I18n.localize(elements.detailPanel);
   }
 
   function render() {
@@ -535,17 +593,21 @@
     renderDeviceList();
     renderShows();
     renderDetail();
+    I18n.localize(document);
   }
 
   async function loadLibrary() {
     elements.refreshButton.disabled = true;
     try {
       if (globalThis.VideoTrackerDeviceProfile) {
+        state.networkInfoEnabled =
+          await globalThis.VideoTrackerDeviceProfile.getNetworkInfoEnabled();
+        elements.networkInfoToggle.checked = state.networkInfoEnabled;
         state.device = await globalThis.VideoTrackerDeviceProfile.ensure();
       }
       const response = await sendRuntime({ type: "VT_GET_LIBRARY_STATE" });
       if (!response.ok) {
-        throw new Error(response.error || "无法读取观看记录");
+        throw new Error(response.error || I18n.t("无法读取观看记录"));
       }
 
       state.shows = Array.isArray(response.shows) ? response.shows : [];
@@ -563,7 +625,7 @@
       }
       render();
     } catch (error) {
-      showToast(error.message || "观看记录加载失败", true);
+      showToast(error.message || I18n.t("观看记录加载失败"), true);
       elements.detailPanel.innerHTML = `
         <div class="detail-empty">
           <div>
@@ -573,6 +635,7 @@
           </div>
         </div>
       `;
+      I18n.localize(elements.detailPanel);
     } finally {
       elements.refreshButton.disabled = false;
     }
@@ -580,7 +643,7 @@
 
   async function openUrl(url) {
     if (!url) {
-      showToast("这条记录没有可打开的页面", true);
+      showToast(I18n.t("这条记录没有可打开的页面"), true);
       return;
     }
     await new Promise((resolve) => {
@@ -596,7 +659,7 @@
         ? response.backup
         : await readBackupDirectly();
       if (!backup) {
-        throw new Error(response.error || "无法导出备份");
+        throw new Error(response.error || I18n.t("无法导出备份"));
       }
       const blob = new Blob([JSON.stringify(backup, null, 2)], {
         type: "application/json"
@@ -609,10 +672,13 @@
       anchor.click();
       URL.revokeObjectURL(url);
       showToast(
-        `已导出 ${backup.shows.length} 部剧、${backup.episodes.length} 集记录`
+        I18n.t("已导出 {shows} 部剧、{episodes} 集记录", {
+          episodes: backup.episodes.length,
+          shows: backup.shows.length
+        })
       );
     } catch (error) {
-      showToast(error.message || "导出失败", true);
+      showToast(error.message || I18n.t("导出失败"), true);
     } finally {
       elements.exportButton.disabled = false;
     }
@@ -667,14 +733,16 @@
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      showToast("备份文件过大", true);
+      showToast(I18n.t("备份文件过大"), true);
       return;
     }
 
     try {
       const backup = JSON.parse(await file.text());
       const shouldImport = confirm(
-        "导入会合并备份中的剧集和分集记录，较新的记录优先。继续吗？"
+        I18n.t(
+          "导入会合并备份中的剧集和分集记录，较新的记录优先。继续吗？"
+        )
       );
       if (!shouldImport) {
         return;
@@ -684,14 +752,17 @@
         type: "VT_IMPORT_BACKUP"
       });
       if (!response.ok) {
-        throw new Error(response.error || "导入失败");
+        throw new Error(response.error || I18n.t("导入失败"));
       }
       await loadLibrary();
       showToast(
-        `已合并 ${response.shows} 部剧、${response.episodes} 集记录`
+        I18n.t("已合并 {shows} 部剧、{episodes} 集记录", {
+          episodes: response.episodes,
+          shows: response.shows
+        })
       );
     } catch (error) {
-      showToast(error.message || "备份文件无法读取", true);
+      showToast(error.message || I18n.t("备份文件无法读取"), true);
     } finally {
       elements.importFile.value = "";
     }
@@ -703,8 +774,13 @@
     elements.deleteError.textContent = "";
     elements.deleteMessage.textContent =
       config.type === "show"
-        ? `确定删除“${config.label}”及其所有分集记录？此操作不可撤销。`
-        : `确定删除“${config.label}”这一集的记录？如果它是该剧最后一条记录，剧集条目也会一并删除。`;
+        ? I18n.t("确定删除“{name}”及其所有分集记录？此操作不可撤销。", {
+            name: config.label
+          })
+        : I18n.t(
+            "确定删除“{name}”这一集的记录？如果它是该剧最后一条记录，剧集条目也会一并删除。",
+            { name: I18n.episodeLabel(config.label) }
+          );
     elements.deleteDialog.showModal();
     elements.cancelDeleteSecondary.focus();
   }
@@ -739,7 +815,8 @@
 
     if (!response.ok) {
       elements.confirmDeleteButton.disabled = false;
-      elements.deleteError.textContent = response.error || "删除失败";
+      elements.deleteError.textContent =
+        response.error || I18n.t("删除失败");
       elements.deleteError.hidden = false;
       return;
     }
@@ -748,9 +825,11 @@
     closeDeleteDialog();
     await loadLibrary();
     showToast(
-      pending.type === "show"
-        ? "剧集及分集记录已删除"
-        : "分集记录已删除"
+      I18n.t(
+        pending.type === "show"
+          ? "剧集及分集记录已删除"
+          : "分集记录已删除"
+      )
     );
   }
 
@@ -813,9 +892,11 @@
     try {
       await loadLibrary();
       showToast(
-        state.syncState && state.syncState.status === "synced"
-          ? "本地与云端已对齐"
-          : "同步未完成，请检查浏览器同步设置",
+        I18n.t(
+          state.syncState && state.syncState.status === "synced"
+            ? "本地与云端已对齐"
+            : "同步未完成，请检查浏览器同步设置"
+        ),
         Boolean(state.syncState && state.syncState.status === "error")
       );
     } finally {
@@ -867,7 +948,7 @@
       type: "VT_RENAME_DEVICE"
     });
     if (!response.ok) {
-      showToast(response.error || "设备名称更新失败", true);
+      showToast(response.error || I18n.t("设备名称更新失败"), true);
       return;
     }
     state.device = response.device || state.device;
@@ -875,13 +956,37 @@
       ? response.devices
       : state.devices;
     renderDeviceList();
-    showToast("设备名称已更新");
+    showToast(I18n.t("设备名称已更新"));
   });
 
   elements.deviceList.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches("[data-device-name]")) {
       event.preventDefault();
       event.target.blur();
+    }
+  });
+
+  elements.networkInfoToggle.addEventListener("change", async () => {
+    if (!globalThis.VideoTrackerDeviceProfile) {
+      return;
+    }
+    elements.networkInfoToggle.disabled = true;
+    try {
+      const enabled = elements.networkInfoToggle.checked;
+      state.device =
+        await globalThis.VideoTrackerDeviceProfile.setNetworkInfoEnabled(
+          enabled
+        );
+      state.networkInfoEnabled = enabled;
+      await sendRuntime({ type: "VT_SYNC_NOW" });
+      await loadLibrary();
+      showToast(
+        I18n.t(
+          enabled ? "网络信息已开启" : "网络信息已关闭"
+        )
+      );
+    } finally {
+      elements.networkInfoToggle.disabled = false;
     }
   });
 
@@ -908,5 +1013,6 @@
   }
 
   hydrateIcons();
+  I18n.localize(document);
   void loadLibrary();
 })();

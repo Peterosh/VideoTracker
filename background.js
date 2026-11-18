@@ -1,6 +1,7 @@
-importScripts("core.js");
+importScripts("core.js", "i18n.js");
 
 const Core = self.VideoTrackerCore;
+const I18n = self.VideoTrackerI18n;
 const ACTIVE_SESSIONS_KEY = "vt.activeSessions.v1";
 const DEVICE_PROFILE_KEY = "vt.deviceProfile.v1";
 const DEVICE_SYNC_PREFIX = "vt.device.";
@@ -172,13 +173,13 @@ function sanitizeRecord(record) {
     episodeLabel: limitText(record.episodeLabel, 40),
     episodeSource: record.episodeSource === "manual" ? "manual" : "auto",
     id: limitText(record.id, 80),
-    name: limitText(record.name, 100) || "未命名剧集",
+    name: limitText(record.name, 100) || I18n.t("未命名剧集"),
     pageTitle: limitText(record.pageTitle, 300),
     position: Math.max(0, Number(record.position) || 0),
     progress: Core.calculateProgress(record.position, record.duration),
     seriesKey: limitText(record.seriesKey, 240),
     site: limitText(record.site, 40) || "generic",
-    siteLabel: limitText(record.siteLabel, 40) || "网页视频",
+    siteLabel: limitText(record.siteLabel, 40) || I18n.t("网页视频"),
     updatedAt: Number(record.updatedAt) || Date.now(),
     url: String(record.url || "").slice(0, 1800),
     version: SCHEMA_VERSION
@@ -251,10 +252,10 @@ async function getLocalDeviceProfile() {
         : `device-${Date.now().toString(36)}`,
     localIp: "",
     publicIp: "",
-    name: "未命名设备",
+    name: I18n.t("未命名设备"),
     nameUpdatedAt: 0,
     networkUpdatedAt: 0,
-    platform: "未知平台",
+    platform: I18n.t("未知平台"),
     updatedAt: Date.now()
   };
   await storageSet(chrome.storage.local, {
@@ -276,7 +277,7 @@ function buildDeviceList(profile, syncResult) {
         id: value.id,
         lastSeenAt: Number(value.lastSeenAt) || 0,
         localIp: value.localIp || "",
-        name: value.name || "未命名设备",
+        name: value.name || I18n.t("未命名设备"),
         nameUpdatedAt: Number(value.nameUpdatedAt) || 0,
         platform: value.platform || "",
         publicIp: value.publicIp || "",
@@ -291,7 +292,7 @@ function buildDeviceList(profile, syncResult) {
       devicesById.get(profile.id)?.lastSeenAt || profile.updatedAt || 0
     ),
     localIp: profile.localIp || "",
-    name: profile.name || "未命名设备",
+    name: profile.name || I18n.t("未命名设备"),
     nameUpdatedAt: Number(profile.nameUpdatedAt) || 0,
     platform: profile.platform || "",
     publicIp: profile.publicIp || "",
@@ -344,7 +345,7 @@ async function touchDeviceHeartbeat(options) {
       id: limitText(profile.id, 80),
       lastSeenAt: now,
       localIp: limitText(profile.localIp, 60),
-      name: limitText(profile.name, 80) || "未命名设备",
+      name: limitText(profile.name, 80) || I18n.t("未命名设备"),
       nameUpdatedAt: Number(profile.nameUpdatedAt) || now,
       platform: limitText(profile.platform, 40),
       publicIp: limitText(profile.publicIp, 80),
@@ -366,7 +367,7 @@ async function renameDevice(message) {
   const deviceId = limitText(message.deviceId, 80);
   const name = limitText(message.name, 80);
   if (!deviceId || !name) {
-    throw new Error("设备名称无效");
+    throw new Error(I18n.t("设备名称无效"));
   }
 
   let profile = await getLocalDeviceProfile();
@@ -388,7 +389,7 @@ async function renameDevice(message) {
   const key = deviceSyncKey(deviceId);
   const existing = syncResult[key];
   if (!existing && deviceId !== profile.id) {
-    throw new Error("设备记录不存在");
+    throw new Error(I18n.t("设备记录不存在"));
   }
   const record = {
     browser: limitText(existing?.browser || profile.browser, 40),
@@ -993,7 +994,7 @@ function buildSnapshot(tab, results) {
   }
 
   titleCandidates.sort((left, right) => right.score - left.score);
-  const title = titleCandidates[0]?.value || "当前视频";
+  const title = titleCandidates[0]?.value || I18n.t("当前视频");
   const episodeLabel =
     rawTexts.map((text) => Core.extractEpisodeLabel(text)).find(Boolean) || "";
   const duration = bestVideo ? Math.max(0, Number(bestVideo.duration) || 0) : 0;
@@ -1049,7 +1050,7 @@ async function importBackup(message) {
     !Array.isArray(backup.shows) ||
     !Array.isArray(backup.episodes)
   ) {
-    throw new Error("备份文件格式无效");
+    throw new Error(I18n.t("备份文件格式无效"));
   }
 
   const [syncAll, localAll] = await Promise.all([
@@ -1125,7 +1126,7 @@ async function getTabSnapshot(tabId, options) {
     return {
       canTrack: false,
       capturedAt: Date.now(),
-      error: "标签页已关闭",
+      error: I18n.t("标签页已关闭"),
       hasVideo: false
     };
   }
@@ -1134,12 +1135,12 @@ async function getTabSnapshot(tabId, options) {
     return {
       canTrack: false,
       capturedAt: Date.now(),
-      error: "当前页面不支持视频检测",
+      error: I18n.t("当前页面不支持视频检测"),
       hasVideo: false,
       pageTitle: tab.title || "",
       site: "generic",
-      siteLabel: "网页视频",
-      title: tab.title || "当前页面",
+      siteLabel: I18n.t("网页视频"),
+      title: tab.title || I18n.t("当前页面"),
       url: tab.url || ""
     };
   }
@@ -1162,7 +1163,7 @@ async function getTabSnapshot(tabId, options) {
       pageTitle: tab.title || "",
       site: Core.getSite(tab.url || "").id,
       siteLabel: Core.getSite(tab.url || "").label,
-      title: Core.cleanSeriesTitle(tab.title || "当前视频"),
+      title: Core.cleanSeriesTitle(tab.title || I18n.t("当前视频")),
       url: tab.url || ""
     };
     snapshotCache.set(tabId, { cachedAt: Date.now(), snapshot });
@@ -1216,15 +1217,15 @@ function snapshotIsSameEpisode(record, snapshot) {
 async function startTracking(message) {
   const tabId = Number(message.tabId);
   if (!tabId) {
-    throw new Error("没有找到当前标签页");
+    throw new Error(I18n.t("没有找到当前标签页"));
   }
 
   const snapshot = await getTabSnapshot(tabId, { fresh: true });
   if (!snapshot || !snapshot.canTrack) {
     throw new Error(
       snapshot && snapshot.error
-        ? `无法读取视频：${snapshot.error}`
-        : "当前页面还没有可记录的播放进度"
+        ? I18n.t("无法读取视频：{error}", { error: snapshot.error })
+        : I18n.t("当前页面还没有可记录的播放进度")
     );
   }
 
@@ -1466,7 +1467,7 @@ async function stopTracking(tabId) {
 async function updateShow(message) {
   const record = await getRecord(message.id);
   if (!record) {
-    throw new Error("追踪记录不存在");
+    throw new Error(I18n.t("追踪记录不存在"));
   }
 
   const episodeSource = message.episodeSource === "manual" ? "manual" : "auto";
@@ -1534,7 +1535,7 @@ async function deleteEpisode(message) {
     180
   );
   if (!episodeId) {
-    return { ok: false, error: "无效的剧集记录" };
+    return { ok: false, error: I18n.t("无效的剧集记录") };
   }
 
   const [episodes, sessions] = await Promise.all([

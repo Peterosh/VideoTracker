@@ -84,6 +84,14 @@
               <span>设备列表</span>
               <span class="count" id="deviceCount">1</span>
             </summary>
+            <label class="network-consent" for="networkInfoToggle">
+              <input id="networkInfoToggle" type="checkbox">
+              <span class="toggle-control" aria-hidden="true"></span>
+              <span>
+                <strong>网络信息</strong>
+                <small>允许获取并同步局域网和公网 IP</small>
+              </span>
+            </label>
             <div class="device-list" id="deviceList">
               <p class="device-list-empty">正在读取设备...</p>
             </div>
@@ -153,6 +161,7 @@
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="core.js"></script>
+    <script src="i18n.js"></script>
     <script src="icons.js"></script>
     <script src="device-profile.js"></script>
     <script src="library.js"></script>

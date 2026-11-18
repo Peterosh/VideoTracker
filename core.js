@@ -307,38 +307,41 @@
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
 
-  function formatRelativeTime(timestamp, now) {
+  function formatRelativeTime(timestamp, now, locale) {
     const value = Number(timestamp) || 0;
+    const english = /^en/i.test(locale || "");
     if (!value) {
-      return "暂无记录";
+      return english ? "No record" : "暂无记录";
     }
 
     const current = Number(now) || Date.now();
     const deltaSeconds = Math.max(0, Math.floor((current - value) / 1000));
     if (deltaSeconds < 60) {
-      return "刚刚";
+      return english ? "Just now" : "刚刚";
     }
 
     const deltaMinutes = Math.floor(deltaSeconds / 60);
     if (deltaMinutes < 60) {
-      return `${deltaMinutes} 分钟前`;
+      return english ? `${deltaMinutes} min ago` : `${deltaMinutes} 分钟前`;
     }
 
     const deltaHours = Math.floor(deltaMinutes / 60);
     if (deltaHours < 24) {
-      return `${deltaHours} 小时前`;
+      return english ? `${deltaHours} hr ago` : `${deltaHours} 小时前`;
     }
 
     const deltaDays = Math.floor(deltaHours / 24);
     if (deltaDays === 1) {
-      return "昨天";
+      return english ? "Yesterday" : "昨天";
     }
     if (deltaDays < 7) {
-      return `${deltaDays} 天前`;
+      return english ? `${deltaDays} days ago` : `${deltaDays} 天前`;
     }
 
     const date = new Date(value);
-    return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+    return english
+      ? date.toLocaleDateString("en-US", { day: "numeric", month: "short" })
+      : `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
   }
 
   return Object.freeze({

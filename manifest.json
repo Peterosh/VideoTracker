@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwBxi0AENQR5Bc8uVK+RIDxckU8pKwM87dfmnW/ITE6yFEVH+rzGjhsZCGvuj03lIHYVV/WUn56U+nCTOZyRiNVqXbfn8HOSNIM2fh8x7YK0ZFSBg2ZX1ovi+T+hlGsMoW3InhwQBbbfwFjVmiFZc8eG1H7fiTPTd4NAn/kuDwZE0OXuwBy8++sqa7N3HvUUvMQRDd3daTEm3Kzx79V+GA+/DX8QeQ+9REGlVvu9vYqOPATV/5uYJAhH2o+fO5F1Tc/9/GMgBwuzWqhMx9RstqUnj2+c1YG7x30LH8f5E2L6xBV14ahqZIuJAsm/KTfh5nySs6wG9LWNvGoTp1YIrVQIDAQAB",
-  "name": "剧迹 - VideoTracker",
-  "short_name": "剧迹",
-  "version": "0.8.0",
-  "description": "记录连续剧的观看集数与分钟进度，并通过浏览器账户在设备间同步。",
+  "name": "__MSG_extensionName__",
+  "short_name": "__MSG_extensionShortName__",
+  "default_locale": "zh_CN",
+  "version": "0.9.0",
+  "description": "__MSG_extensionDescription__",
   "permissions": [
     "activeTab",
     "alarms",
@@ -20,7 +21,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "追踪当前剧集",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "assets/icon-16.png",

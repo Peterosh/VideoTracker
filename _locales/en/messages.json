@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "VideoTracker - Episode Progress Tracker"
+  },
+  "extensionShortName": {
+    "message": "VideoTracker"
+  },
+  "extensionDescription": {
+    "message": "Track episode and watch-time progress, with browser-account sync across devices."
+  },
+  "actionTitle": {
+    "message": "Track current episode"
+  }
+}

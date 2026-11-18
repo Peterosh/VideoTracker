@@ -7,6 +7,7 @@ const sharp = require("sharp");
 
 const root = path.resolve(__dirname, "..");
 const assetsDirectory = path.join(root, "assets");
+const storeAssetsDirectory = path.join(root, "store", "assets");
 
 const iconMap = {
   check: "Check",
@@ -77,6 +78,7 @@ ${entries.join(",\n")}
 
 async function generateAppIcons() {
   fs.mkdirSync(assetsDirectory, { recursive: true });
+  fs.mkdirSync(storeAssetsDirectory, { recursive: true });
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <rect x="5" y="5" width="118" height="118" rx="28" fill="#0f110f" stroke="#2b3028" stroke-width="2"/>
@@ -95,6 +97,11 @@ async function generateAppIcons() {
       .png()
       .toFile(path.join(assetsDirectory, `icon-${size}.png`));
   }
+
+  await sharp(Buffer.from(svg))
+    .resize(300, 300)
+    .png()
+    .toFile(path.join(storeAssetsDirectory, "logo-300.png"));
 }
 
 async function main() {
