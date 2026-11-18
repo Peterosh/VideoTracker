@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>剧迹 - VideoTracker</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="剧迹 VideoTracker">
+          <span class="brand-mark" aria-hidden="true">
+            <span class="icon" data-icon="film" data-icon-size="20"></span>
+            <span class="brand-dot"></span>
+          </span>
+          <span class="brand-copy">
+            <strong>剧迹</strong>
+            <small>VIDEO TRACKER</small>
+          </span>
+        </div>
+        <div class="topbar-actions">
+          <div
+            class="sync-state"
+            id="syncState"
+            title="记录通过浏览器账户同步"
+            aria-label="浏览器同步"
+          >
+            <span class="sync-dot" aria-hidden="true"></span>
+            <span id="syncLabel">浏览器同步</span>
+          </div>
+          <button
+            class="icon-button manage-button"
+            id="manageButton"
+            type="button"
+            aria-label="打开观看记录管理"
+            title="管理观看记录"
+          >
+            <span class="icon" data-icon="layout-list" data-icon-size="18"></span>
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="current-section" aria-labelledby="currentLabel">
+          <div class="section-kicker">
+            <span class="eyebrow" id="currentLabel">当前视频</span>
+            <span class="playback-state" id="playbackState" hidden>
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="playbackText"></span>
+            </span>
+          </div>
+          <div id="currentContent" aria-live="polite">
+            <div class="current-skeleton" aria-label="正在读取视频信息">
+              <div class="skeleton skeleton-title"></div>
+              <div class="skeleton skeleton-copy"></div>
+              <div class="skeleton skeleton-button"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="library-section" aria-labelledby="libraryTitle">
+          <div class="section-heading-row">
+            <div>
+              <span class="eyebrow">观看记录</span>
+              <h2 id="libraryTitle">追踪列表</h2>
+            </div>
+            <span class="record-count" id="libraryCount">0 部</span>
+          </div>
+          <div id="libraryContent">
+            <div class="library-skeleton" aria-label="正在读取追踪列表">
+              <div class="skeleton skeleton-row"></div>
+              <div class="skeleton skeleton-row"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="dialog" id="editDialog" aria-labelledby="editTitle">
+      <form class="dialog-panel" id="editForm" method="dialog">
+        <div class="dialog-heading">
+          <h2 id="editTitle">编辑记录</h2>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="editDialog"
+            aria-label="关闭编辑窗口"
+            title="关闭"
+          >
+            <span class="icon" data-icon="x" data-icon-size="18"></span>
+          </button>
+        </div>
+
+        <label class="field">
+          <span>剧名</span>
+          <input id="editName" name="name" maxlength="100" required>
+        </label>
+
+        <label class="field">
+          <span>集数</span>
+          <input id="editEpisode" name="episode" maxlength="40" placeholder="待识别">
+        </label>
+
+        <label class="toggle-row" for="editAuto">
+          <input id="editAuto" type="checkbox">
+          <span class="toggle-control" aria-hidden="true"></span>
+          <span class="toggle-copy">
+            <strong>自动识别集数</strong>
+            <small>跟随视频页面更新</small>
+          </span>
+        </label>
+
+        <p class="form-error" id="editError" role="alert" hidden></p>
+
+        <div class="dialog-actions">
+          <button class="button button-secondary" type="button" data-close-dialog="editDialog">
+            取消
+          </button>
+          <button class="button button-primary" id="editSave" type="submit">
+            <span class="icon" data-icon="check" data-icon-size="17"></span>
+            <span>保存</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="dialog" id="deleteDialog" aria-labelledby="deleteTitle">
+      <form class="dialog-panel" id="deleteForm" method="dialog">
+        <div class="dialog-heading">
+          <h2 id="deleteTitle">删除记录</h2>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="deleteDialog"
+            aria-label="关闭删除窗口"
+            title="关闭"
+          >
+            <span class="icon" data-icon="x" data-icon-size="18"></span>
+          </button>
+        </div>
+        <p class="dialog-copy">
+          确定删除“<strong id="deleteName"></strong>”的观看记录？此操作不可撤销。
+        </p>
+        <p class="form-error" id="deleteError" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="button button-secondary" type="button" data-close-dialog="deleteDialog">
+            取消
+          </button>
+          <button class="button button-danger" id="deleteConfirm" type="submit">
+            <span class="icon" data-icon="trash-2" data-icon-size="17"></span>
+            <span>删除</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="core.js"></script>
+    <script src="icons.js"></script>
+    <script src="device-profile.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
