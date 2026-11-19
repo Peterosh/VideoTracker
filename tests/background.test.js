@@ -527,6 +527,84 @@ test("saves the latest position when tracking stops", async () => {
   );
 });
 
+test("marks an episode complete after naturally watching 80 percent", async () => {
+  const harness = createHarness();
+  const url = "https://v.qq.com/x/cover/movie/ep-movie.html";
+  const lesson = {
+    ...defaultFrame(0, 1, url),
+    duration: 600,
+    frameTitle: "测试动画电影 第1集 - 腾讯视频",
+    heading: "测试动画电影",
+    ogTitle: "测试动画电影 第1集 - 腾讯视频"
+  };
+  harness.setFrameResult(lesson);
+  const started = await harness.send(
+    {
+      episodeLabel: "第 1 集",
+      episodeSource: "auto",
+      name: "测试动画电影",
+      tabId: 7,
+      type: "VT_START_TRACKING"
+    },
+    {}
+  );
+
+  for (let position = 30; position <= 480; position += 30) {
+    harness.advanceTime(30000);
+    harness.setFrameResult({
+      ...lesson,
+      currentTime: position
+    });
+    await harness.send({ tabId: 7, type: "VT_SYNC_TAB" }, {});
+  }
+
+  const show = harness.syncStore[`vt.show.${started.record.id}`];
+  const episodeKey = Object.keys(harness.syncStore).find((key) =>
+    key.startsWith("vt.episode.")
+  );
+  assert.equal(show.episodeCompleted, true);
+  assert.equal(harness.syncStore[episodeKey].completed, true);
+  assert.equal(show.position, 480);
+});
+
+test("does not mark an episode complete after seeking to 83 percent", async () => {
+  const harness = createHarness();
+  const url = "https://v.qq.com/x/cover/movie/ep-movie.html";
+  const lesson = {
+    ...defaultFrame(0, 1, url),
+    duration: 600,
+    frameTitle: "测试动画电影 第1集 - 腾讯视频",
+    heading: "测试动画电影",
+    ogTitle: "测试动画电影 第1集 - 腾讯视频"
+  };
+  harness.setFrameResult(lesson);
+  const started = await harness.send(
+    {
+      episodeLabel: "第 1 集",
+      episodeSource: "auto",
+      name: "测试动画电影",
+      tabId: 7,
+      type: "VT_START_TRACKING"
+    },
+    {}
+  );
+
+  harness.advanceTime(1000);
+  harness.setFrameResult({
+    ...lesson,
+    currentTime: 500
+  });
+  await harness.send({ tabId: 7, type: "VT_SYNC_TAB" }, {});
+  await harness.send({ tabId: 7, type: "VT_STOP_TRACKING" }, {});
+
+  const show = harness.syncStore[`vt.show.${started.record.id}`];
+  const episodeKey = Object.keys(harness.syncStore).find((key) =>
+    key.startsWith("vt.episode.")
+  );
+  assert.equal(show.episodeCompleted, false);
+  assert.equal(harness.syncStore[episodeKey].completed, false);
+});
+
 test("stops tracking when the tab switches to another show", async () => {
   const harness = createHarness();
   await startDefault(harness);
@@ -552,6 +630,68 @@ test("stops tracking when the tab switches to another show", async () => {
   assert.equal(result.active, false);
   assert.equal(result.reason, "series-changed");
   assert.equal(harness.localStore["vt.activeSessions.v1"][7], undefined);
+});
+
+test("automatically resumes tracking for a known show in a new tab", async () => {
+  const url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  const frame = defaultFrame(300, 3, url);
+  const record = knownRecordForFrame(frame, "庆余年");
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const state = await harness.send(
+    { tabId: 7, type: "VT_GET_APP_STATE" },
+    {}
+  );
+  assert.equal(state.session.autoResumed, true);
+  assert.equal(state.session.showId, record.id);
+
+  harness.advanceTime(16000);
+  harness.setFrameResult(defaultFrame(420, 3, url));
+  const synced = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  assert.equal(synced.written, true);
+  assert.equal(harness.syncStore[`vt.show.${record.id}`].position, 420);
+});
+
+test("does not auto-resume a show after the user explicitly stops", async () => {
+  const url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  const frame = defaultFrame(300, 3, url);
+  const record = knownRecordForFrame(frame, "庆余年");
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const resumed = await harness.send(
+    { tabId: 7, type: "VT_GET_APP_STATE" },
+    {}
+  );
+  assert.equal(resumed.session.showId, record.id);
+
+  await harness.send({ tabId: 7, type: "VT_STOP_TRACKING" }, {});
+  const stopped = await harness.send(
+    { tabId: 7, type: "VT_GET_APP_STATE" },
+    {}
+  );
+  assert.equal(stopped.session, null);
+  assert.equal(
+    harness.localStore["vt.trackingSuppressions.v1"][7].seriesKey,
+    record.seriesKey
+  );
+
+  await startDefault(harness);
+  const restarted = await harness.send(
+    { tabId: 7, type: "VT_GET_APP_STATE" },
+    {}
+  );
+  assert.equal(restarted.session.showId, record.id);
 });
 
 test("returns per-episode history for the management page", async () => {
@@ -704,6 +844,22 @@ function syncRecord(showId, updatedAt, name) {
     updatedAt,
     url: "https://example.com/ep3",
     version: 2
+  };
+}
+
+function knownRecordForFrame(frame, name) {
+  const title = Core.cleanSeriesTitle(frame.frameTitle);
+  const seriesKey = Core.deriveSeriesKey(frame.url, title);
+  const showId = Core.createShowId(seriesKey);
+  return {
+    ...syncRecord(showId, 1000, name || title),
+    episodeLabel: "第 3 集",
+    pageTitle: frame.frameTitle,
+    seriesKey,
+    site: "tencent",
+    siteLabel: "腾讯视频",
+    title,
+    url: frame.url
   };
 }
 

@@ -11,6 +11,7 @@ const LOCAL_SCHEMA_KEY = "vt.schemaVersion";
 const LOCAL_SHOW_PREFIX = "vt.local.show.";
 const SYNC_ISSUE_KEY = "vt.syncIssue";
 const SYNC_SHOW_PREFIX = "vt.show.";
+const TRACKING_SUPPRESSION_KEY = "vt.trackingSuppressions.v1";
 const TRACKING_ALARM = "vt.trackingHeartbeat";
 const SCHEMA_VERSION = 2;
 const SYNC_INTERVAL_MS = 15000;
@@ -24,9 +25,12 @@ const AD_DURATION_MAX_SEC = 180;
 const CONTENT_DURATION_MIN_SEC = 300;
 const AD_DURATION_DROP_RATIO = 0.35;
 const AD_STABILITY_MS = 6000;
+const COMPLETION_PROGRESS_RATIO = 0.8;
+const COMPLETION_MIN_WATCH_SECONDS = 300;
 
 let sessionsCache = null;
 let sessionsLoading = null;
+const resumeChecks = new Map();
 const snapshotCache = new Map();
 
 function storageGet(area, keys) {
@@ -144,6 +148,126 @@ async function saveSessions() {
   await storageSet(chrome.storage.local, {
     [ACTIVE_SESSIONS_KEY]: sessionsCache || {}
   });
+}
+
+async function getTrackingSuppressions() {
+  const result = await storageGet(
+    chrome.storage.local,
+    TRACKING_SUPPRESSION_KEY
+  ).catch(() => ({}));
+  return result[TRACKING_SUPPRESSION_KEY] || {};
+}
+
+async function setTrackingSuppressed(tabId, seriesKey) {
+  if (!tabId || !seriesKey) {
+    return;
+  }
+  const suppressions = await getTrackingSuppressions();
+  suppressions[tabId] = {
+    seriesKey,
+    updatedAt: Date.now()
+  };
+  await storageSet(chrome.storage.local, {
+    [TRACKING_SUPPRESSION_KEY]: suppressions
+  });
+}
+
+async function clearTrackingSuppression(tabId) {
+  if (!tabId) {
+    return;
+  }
+  const suppressions = await getTrackingSuppressions();
+  if (!(tabId in suppressions)) {
+    return;
+  }
+  delete suppressions[tabId];
+  await storageSet(chrome.storage.local, {
+    [TRACKING_SUPPRESSION_KEY]: suppressions
+  });
+}
+
+async function maybeResumeTrackedTab(tabId) {
+  const numericTabId = Number(tabId);
+  if (!numericTabId) {
+    return null;
+  }
+  if (resumeChecks.has(numericTabId)) {
+    return resumeChecks.get(numericTabId);
+  }
+
+  const check = (async () => {
+    const sessions = await loadSessions();
+    if (sessions[numericTabId]) {
+      return sessions[numericTabId];
+    }
+
+    const tab = await getTab(numericTabId).catch(() => null);
+    if (!tab || (!tab.active && !tab.audible)) {
+      return null;
+    }
+
+    const snapshot = await getTabSnapshot(numericTabId, { fresh: true });
+    if (
+      !snapshot ||
+      !snapshot.hasVideo ||
+      !snapshot.duration ||
+      !snapshot.seriesKey
+    ) {
+      return null;
+    }
+
+    const suppressions = await getTrackingSuppressions();
+    const suppression = suppressions[numericTabId];
+    if (suppression && suppression.seriesKey === snapshot.seriesKey) {
+      return null;
+    }
+    if (suppression) {
+      await clearTrackingSuppression(numericTabId);
+    }
+
+    const showId = Core.createShowId(snapshot.seriesKey);
+    const record = await getRecord(showId);
+    if (!record) {
+      return null;
+    }
+
+    const now = Date.now();
+    const session = {
+      adObservationKey: "",
+      adObservationSince: 0,
+      autoResumed: true,
+      contentDuration: Number(record.duration) || 0,
+      contentSourceKey: "",
+      lastObservedAt: now,
+      lastObservedPosition: Number(snapshot.currentTime) || 0,
+      lastSyncAt: now,
+      seriesKey: snapshot.seriesKey,
+      showId,
+      startedAt: now,
+      watchedSeconds: 0
+    };
+    sessions[numericTabId] = session;
+    await saveSessions();
+    setBadge(numericTabId, true);
+    createTrackingAlarm();
+    return session;
+  })();
+
+  resumeChecks.set(numericTabId, check);
+  try {
+    return await check;
+  } finally {
+    resumeChecks.delete(numericTabId);
+  }
+}
+
+async function resumeActiveTrackedTabs() {
+  const tabs = await queryTabs({ active: true }).catch(() => []);
+  for (const tab of tabs) {
+    if (tab && tab.id) {
+      await maybeResumeTrackedTab(tab.id).catch(() => {});
+    }
+  }
 }
 
 function syncKeyFor(showId) {
@@ -421,7 +545,13 @@ async function renameDevice(message) {
   };
 }
 
-function episodeRecordFromSnapshot(record, snapshot, existing, device) {
+function episodeRecordFromSnapshot(
+  record,
+  snapshot,
+  existing,
+  device,
+  completed
+) {
   const episodeLabel =
     record.episodeSource === "manual"
       ? record.episodeLabel
@@ -435,6 +565,8 @@ function episodeRecordFromSnapshot(record, snapshot, existing, device) {
 
   return sanitizeEpisodeRecord({
     completed:
+      Boolean(existing && existing.completed) ||
+      Boolean(completed) ||
       Boolean(snapshot.ended) ||
       (snapshot.duration > 0 &&
         snapshot.duration - snapshot.currentTime <= 1),
@@ -1330,6 +1462,46 @@ function sourceLooksLikeAdvertisement(value) {
   );
 }
 
+function updateNaturalWatchProgress(session, snapshot, now) {
+  const position = Math.max(0, Number(snapshot.currentTime) || 0);
+  const lastPosition = Number(session.lastObservedPosition);
+  const lastObservedAt = Number(session.lastObservedAt);
+  if (Number.isFinite(lastPosition) && Number.isFinite(lastObservedAt)) {
+    const delta = position - lastPosition;
+    const elapsedSeconds = Math.max(0, (now - lastObservedAt) / 1000);
+    const maximumStep = Math.max(5, elapsedSeconds * 3 + 5);
+    if (delta > 0 && delta <= maximumStep) {
+      session.watchedSeconds =
+        (Number(session.watchedSeconds) || 0) +
+        Math.min(delta, MAX_WATCH_SAMPLE_MS / 1000);
+    }
+  }
+  session.lastObservedPosition = position;
+  session.lastObservedAt = now;
+}
+
+function episodeReachedCompletion(snapshot, session) {
+  const duration = Math.max(0, Number(snapshot.duration) || 0);
+  const position = Math.max(0, Number(snapshot.currentTime) || 0);
+  if (!duration) {
+    return false;
+  }
+  if (
+    snapshot.ended ||
+    (duration > 0 && duration - position <= 1)
+  ) {
+    return true;
+  }
+  if (position / duration < COMPLETION_PROGRESS_RATIO) {
+    return false;
+  }
+  const requiredWatchSeconds = Math.min(
+    COMPLETION_MIN_WATCH_SECONDS,
+    Math.max(60, duration * 0.2)
+  );
+  return Number(session.watchedSeconds) >= requiredWatchSeconds;
+}
+
 function evaluateAdvertisement(snapshot, record, session, now) {
   const duration = Math.max(0, Number(snapshot.duration) || 0);
   const sourceKey = videoSourceKey(snapshot.videoSource || "");
@@ -1414,6 +1586,7 @@ async function startTracking(message) {
         : I18n.t("当前页面还没有可记录的播放进度")
     );
   }
+  await clearTrackingSuppression(tabId);
 
   const seriesKey =
     limitText(snapshot.seriesKey, 240) ||
@@ -1437,10 +1610,13 @@ async function startTracking(message) {
     adObservationSince: 0,
     contentDuration: Number(existingRecord && existingRecord.duration) || 0,
     contentSourceKey: "",
+    lastObservedAt: now,
+    lastObservedPosition: Number(snapshot.currentTime) || 0,
     lastSyncAt: now,
     seriesKey,
     showId,
-    startedAt: now
+    startedAt: now,
+    watchedSeconds: 0
   };
   const adGuard = evaluateAdvertisement(snapshot, existingRecord, session, now);
   if (adGuard.blocked) {
@@ -1500,7 +1676,8 @@ async function startTracking(message) {
       candidateRecord,
       snapshot,
       existingEpisode,
-      device
+      device,
+      episodeReachedCompletion(snapshot, session)
     );
     writeResult = await writeRecord(candidateRecord, episodeRecord);
   }
@@ -1554,6 +1731,11 @@ async function updateTrackedTab(tabId, options) {
   const adGuard = evaluateAdvertisement(snapshot, record, session, now);
   sessions[tabId] = session;
   if (adGuard.blocked) {
+    session.lastObservedAt = now;
+    session.lastObservedPosition = Math.max(
+      0,
+      Number(snapshot.currentTime) || 0
+    );
     await saveSessions();
     return {
       active: true,
@@ -1562,6 +1744,7 @@ async function updateTrackedTab(tabId, options) {
       written: false
     };
   }
+  updateNaturalWatchProgress(session, snapshot, now);
 
   const observedEpisode =
     Core.normalizeText(snapshot.episodeLabel) || snapshot.url;
@@ -1625,12 +1808,11 @@ async function updateTrackedTab(tabId, options) {
     delete session.positionRegression;
   }
 
+  const completedNow = episodeReachedCompletion(snapshot, session);
   const updated = sanitizeRecord({
     ...record,
     duration: snapshot.duration || record.duration,
-    episodeCompleted:
-      Boolean(snapshot.ended) ||
-      (snapshot.duration > 0 && snapshot.duration - snapshot.currentTime <= 1),
+    episodeCompleted: Boolean(record.episodeCompleted) || completedNow,
     episodeLabel:
       record.episodeSource === "auto" && snapshot.episodeLabel
         ? snapshot.episodeLabel
@@ -1666,7 +1848,8 @@ async function updateTrackedTab(tabId, options) {
     updated,
     snapshot,
     existingEpisode,
-    device
+    device,
+    completedNow
   );
   const result = await writeRecord(updated, episodeRecord);
   delete session.pendingRecord;
@@ -1682,11 +1865,16 @@ async function updateTrackedTab(tabId, options) {
 }
 
 async function stopTracking(tabId) {
+  const beforeStop = await loadSessions();
+  const seriesKey = beforeStop[tabId]?.seriesKey || "";
   await updateTrackedTab(tabId, { force: true }).catch(() => {});
   const sessions = await loadSessions();
   const hadSession = Boolean(sessions[tabId]);
   delete sessions[tabId];
   await saveSessions();
+  if (seriesKey) {
+    await setTrackingSuppressed(tabId, seriesKey).catch(() => {});
+  }
   setBadge(tabId, false);
   return { ok: true, stopped: hadSession };
 }
@@ -1859,11 +2047,14 @@ async function deleteEpisode(message) {
 
 async function getAppState(message) {
   const syncState = await synchronizeStorage();
+  const tabId = Number(message.tabId);
+  if (tabId) {
+    await maybeResumeTrackedTab(tabId).catch(() => {});
+  }
   const [records, sessionsResult] = await Promise.all([
     getAllRecords(),
     loadSessions()
   ]);
-  const tabId = Number(message.tabId);
   const localState = await storageGet(chrome.storage.local, SYNC_ISSUE_KEY).catch(
     () => ({})
   );
@@ -1983,7 +2174,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       if (sessions[tabId]) {
         return updateTrackedTab(tabId, { force: true });
       }
-      return null;
+      return maybeResumeTrackedTab(tabId);
     })
     .catch(() => {});
 });
@@ -1995,13 +2186,14 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
       if (sessions[tabId]) {
         return updateTrackedTab(tabId, { force: true });
       }
-      return null;
+      return maybeResumeTrackedTab(tabId);
     })
     .catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   snapshotCache.delete(tabId);
+  await clearTrackingSuppression(tabId).catch(() => {});
   const sessions = await loadSessions();
   if (!sessions[tabId]) {
     return;
@@ -2025,10 +2217,13 @@ chrome.runtime.onInstalled.addListener(async () => {
     [LOCAL_SCHEMA_KEY]: SCHEMA_VERSION
   }).catch(() => {});
   createTrackingAlarm();
+  await resumeActiveTrackedTabs();
   await heartbeat();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   createTrackingAlarm();
-  heartbeat().catch(() => {});
+  resumeActiveTrackedTabs()
+    .then(() => heartbeat())
+    .catch(() => {});
 });

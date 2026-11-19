@@ -1,6 +1,6 @@
 {
   "name": "video-tracker-extension",
-  "version": "0.10.4",
+  "version": "0.10.6",
   "private": true,
   "description": "Chromium extension for syncing episodic video progress.",
   "scripts": {

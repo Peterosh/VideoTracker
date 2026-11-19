@@ -164,7 +164,7 @@
   function isComplete(episode) {
     return (
       Boolean(episode.completed) ||
-      Core.calculateProgress(episode.position, episode.duration) >= 95
+      Core.calculateProgress(episode.position, episode.duration) >= 80
     );
   }
 

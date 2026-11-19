@@ -245,6 +245,52 @@ async function main() {
     assert.equal(stored[recordKey].position, 4.5);
     assert.equal(stored[recordKey].episodeLabel, "第 12 集");
 
+    const resumedPage = await context.newPage();
+    await resumedPage.goto(fixture.url, { waitUntil: "load" });
+    const resumedPlayer = resumedPage
+      .frames()
+      .find((frame) => frame.url().endsWith("/player"));
+    assert.ok(resumedPlayer, "resumed fixture player should exist");
+    await resumedPlayer.waitForFunction(
+      () => document.querySelector("video")?.duration > 0
+    );
+
+    const resumedTabs = await worker.evaluate(
+      () =>
+        new Promise((resolve) => {
+          chrome.tabs.query({}, (tabs) =>
+            resolve(tabs.map((tab) => ({ id: tab.id, url: tab.url })))
+          );
+        })
+    );
+    const resumedTab = resumedTabs.find(
+      (tab) =>
+        tab.id !== watchTab.id &&
+        tab.url &&
+        tab.url.startsWith(fixture.url)
+    );
+    assert.ok(resumedTab && resumedTab.id, "resumed fixture tab should exist");
+
+    let resumedSession = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const activeSessions = await worker.evaluate(
+        () =>
+          new Promise((resolve) => {
+            chrome.storage.local.get("vt.activeSessions.v1", (result) =>
+              resolve(result["vt.activeSessions.v1"] || {})
+            );
+          })
+      );
+      resumedSession = activeSessions[resumedTab.id] || null;
+      if (resumedSession?.autoResumed) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    assert.equal(resumedSession?.autoResumed, true);
+    assert.equal(resumedSession?.showId, stored[recordKey].id);
+    await resumedPage.close();
+
     await playerFrame.evaluate(() => window.__fixturePlayback.showAd());
     const adSnapshot = await sendRuntime(extensionPage, {
       tabId: watchTab.id,
@@ -315,6 +361,10 @@ async function main() {
           pinState: {
             pinned: pinnedRecord.pinned,
             unpinned: unpinnedRecord.pinned
+          },
+          resumedSession: {
+            autoResumed: resumedSession.autoResumed,
+            showId: resumedSession.showId
           },
           record: stored[recordKey],
           snapshot

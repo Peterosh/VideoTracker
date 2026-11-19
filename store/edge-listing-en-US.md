@@ -18,6 +18,8 @@ Watch data is stored locally first and synchronized with Chromium browser-sync e
 
 Advertisements do not overwrite content progress. VideoTracker recognizes common ad overlays, short Tencent Video ads, source changes, and abnormal durations, then resumes recording after stable content returns.
 
+An episode is treated as complete after 80% of the video has played naturally, so ending credits can be skipped without losing completion status. Seeking directly to the end is not treated as natural completion.
+
 The header provides network-information controls and a Chinese/English language menu. The device page lets users rename current and remote devices. LAN and public IP collection is optional, disabled by default, and runs only after the user explicitly enables network information. VideoTracker has no separate account system, does not sell user data, does not use advertising, and does not execute remote code.
 
 ## Single purpose
