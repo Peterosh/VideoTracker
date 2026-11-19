@@ -1,3 +1,5 @@
+[简体中文](README.md) | [English](README.en.md)
+
 # 剧迹 - VideoTracker
 
 一个兼容 Microsoft Edge 和 Google Chrome 的浏览器扩展，用于记录连续剧和动漫看到第几集、当前看到多少分钟，并在不同设备间同步观看记录。
