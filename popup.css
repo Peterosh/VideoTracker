@@ -114,7 +114,7 @@ dialog:focus-visible {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .manage-button {
@@ -169,51 +169,94 @@ dialog:focus-visible {
   letter-spacing: 0.14em;
 }
 
-.sync-state {
+.sync-button {
   display: inline-flex;
-  min-height: 30px;
+  min-height: 40px;
   align-items: center;
   gap: 7px;
-  padding: 5px 9px;
+  padding: 0 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
   color: var(--text-soft);
+  cursor: pointer;
   font-size: 11px;
+  font-weight: 650;
   white-space: nowrap;
+  transition:
+    background-color var(--transition),
+    border-color var(--transition),
+    color var(--transition),
+    opacity var(--transition);
 }
 
-.sync-dot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px rgba(105, 211, 157, 0.12);
+.sync-button:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
-.sync-state.is-local {
+.sync-button.is-local {
   color: #f3c684;
   border-color: rgba(244, 184, 96, 0.35);
 }
 
-.sync-state.is-local .sync-dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(244, 184, 96, 0.13);
+.sync-button.is-error {
+  border-color: rgba(255, 129, 119, 0.36);
+  color: var(--danger);
 }
 
-.sync-state.is-warning {
-  border-color: rgba(244, 184, 96, 0.28);
-  color: #f3c684;
+.sync-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
-.sync-state.is-warning .sync-dot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(244, 184, 96, 0.12);
+.sync-button:disabled .icon svg {
+  animation: spin 900ms linear infinite;
+}
+
+.popup-tabs {
+  position: sticky;
+  z-index: 19;
+  top: 66px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(15, 17, 15, 0.96);
+  backdrop-filter: blur(10px);
+}
+
+.popup-tab {
+  min-height: 46px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  transition:
+    border-color var(--transition),
+    color var(--transition);
+}
+
+.popup-tab:hover {
+  color: var(--text);
+}
+
+.popup-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
 }
 
 main {
   padding: 14px 16px 20px;
+}
+
+.popup-panel[hidden] {
+  display: none;
 }
 
 .current-section {
@@ -271,6 +314,15 @@ main {
 
 .playback-state.is-ended .status-dot {
   background: var(--accent);
+}
+
+.playback-state.is-ad {
+  color: var(--accent);
+}
+
+.playback-state.is-ad .status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(244, 184, 96, 0.12);
 }
 
 .icon {
@@ -625,7 +677,13 @@ main {
 }
 
 .library-section {
-  margin-top: 20px;
+  margin-top: 0;
+}
+
+.library-header {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 9px;
 }
 
 .section-heading-row {
@@ -648,17 +706,74 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.library-search {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  transition:
+    background-color var(--transition),
+    border-color var(--transition);
+}
+
+.library-search:focus-within {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.library-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.library-search input::placeholder {
+  color: #73786e;
+}
+
 .library-list {
   display: grid;
 }
 
 .show-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 44px 44px;
+  grid-template-columns: 38px minmax(0, 1fr) 40px 40px 40px;
   align-items: center;
   gap: 4px;
   min-height: 76px;
   border-bottom: 1px solid var(--border);
+}
+
+.show-row .icon-button {
+  width: 40px;
+  height: 40px;
+}
+
+.show-row .pin-button {
+  color: var(--muted);
+}
+
+.show-row .pin-button.is-pinned {
+  border-color: rgba(244, 184, 96, 0.32);
+  background: rgba(244, 184, 96, 0.11);
+  color: var(--accent);
+}
+
+.show-row .pin-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.show-row .pin-button.is-pending .icon svg {
+  animation: spin 900ms linear infinite;
 }
 
 .show-marker {

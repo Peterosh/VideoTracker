@@ -20,6 +20,10 @@ const REGRESSION_CONFIRM_MS = 60000;
 const MAX_WATCH_SAMPLE_MS = 45000;
 const POSITION_REGRESSION_TOLERANCE_SEC = 15;
 const DEVICE_HEARTBEAT_INTERVAL_MS = 60000;
+const AD_DURATION_MAX_SEC = 180;
+const CONTENT_DURATION_MIN_SEC = 300;
+const AD_DURATION_DROP_RATIO = 0.35;
+const AD_STABILITY_MS = 6000;
 
 let sessionsCache = null;
 let sessionsLoading = null;
@@ -175,6 +179,10 @@ function sanitizeRecord(record) {
     id: limitText(record.id, 80),
     name: limitText(record.name, 100) || I18n.t("未命名剧集"),
     pageTitle: limitText(record.pageTitle, 300),
+    pinned: Boolean(record.pinned),
+    pinnedAt: record.pinned
+      ? Math.max(0, Number(record.pinnedAt) || 0)
+      : 0,
     position: Math.max(0, Number(record.position) || 0),
     progress: Core.calculateProgress(record.position, record.duration),
     seriesKey: limitText(record.seriesKey, 240),
@@ -733,9 +741,19 @@ async function getAllRecords() {
     }
   }
 
-  return Array.from(recordsById.values()).sort(
-    (left, right) => Number(right.updatedAt) - Number(left.updatedAt)
-  );
+  return Array.from(recordsById.values()).sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1;
+    }
+    if (left.pinned) {
+      const pinnedOrder =
+        Number(right.pinnedAt) - Number(left.pinnedAt);
+      if (pinnedOrder !== 0) {
+        return pinnedOrder;
+      }
+    }
+    return Number(right.updatedAt) - Number(left.updatedAt);
+  });
 }
 
 async function getAllEpisodes() {
@@ -862,9 +880,81 @@ function inspectFrameInMainWorld() {
     return normalize(element && element.content);
   };
 
+  const isVisibleElement = (element) => {
+    const style = getComputedStyle(element);
+    return (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      element.getClientRects().length > 0
+    );
+  };
+
+  const adMarkerPattern =
+    /(^|[\s_-])(ad|ads|advert|advertisement|adplayer|ad-player|preroll|pre-roll|midroll|mid-roll|txp[_-]?ad)(?=$|[\s_-])/i;
+  const adTextPattern =
+    /^(?:广告(?:倒计时)?|跳过广告|关闭广告|广告\s*\d+\s*秒?|advertisement|ad\s*\d*)$/i;
+
+  const adMarkerText = (element) =>
+    normalize(
+      [
+        element.id,
+        typeof element.className === "string" ? element.className : "",
+        element.getAttribute("aria-label"),
+        element.getAttribute("data-role"),
+        element.getAttribute("data-testid")
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+  const detectAdEvidence = (video) => {
+    const source = String(video.currentSrc || video.src || "");
+    const sourcePath = source.split(/[?#]/, 1)[0];
+    if (adMarkerPattern.test(sourcePath)) {
+      return { detected: true, reason: "source" };
+    }
+
+    let container = video.parentElement;
+    for (let depth = 0; depth < 6 && container; depth += 1) {
+      if (container === document.body || container === document.documentElement) {
+        break;
+      }
+      if (adMarkerPattern.test(adMarkerText(container))) {
+        return { detected: true, reason: "container" };
+      }
+
+      const candidates = container.querySelectorAll(
+        [
+          "[class*='advert']",
+          "[class*='ad-countdown']",
+          "[class*='skip-ad']",
+          "[class*='txp_ad']",
+          "[class*='txp-ad']",
+          "[data-testid*='ad']",
+          "[aria-label*='广告']",
+          "[aria-label*='advertisement' i]"
+        ].join(",")
+      );
+      for (const candidate of candidates) {
+        if (
+          isVisibleElement(candidate) &&
+          (adTextPattern.test(normalize(candidate.textContent)) ||
+            adMarkerPattern.test(adMarkerText(candidate)))
+        ) {
+          return { detected: true, reason: "overlay" };
+        }
+      }
+      container = container.parentElement;
+    }
+
+    return { detected: false, reason: "" };
+  };
+
   const videos = Array.from(document.querySelectorAll("video"));
   let bestVideo = null;
   let bestScore = -1;
+  let bestAdEvidence = { detected: false, reason: "" };
+  let bestSource = "";
 
   for (const video of videos) {
     const rect = video.getBoundingClientRect();
@@ -874,13 +964,17 @@ function inspectFrameInMainWorld() {
     }
 
     const duration = Number(video.duration);
+    const adEvidence = detectAdEvidence(video);
     const score =
-      (!video.paused && !video.ended ? 100000000 : 0) +
+      (!video.paused && !video.ended ? 1e12 : 0) +
+      (!adEvidence.detected ? 1e10 : 0) +
       Math.max(0, rect.width) * Math.max(0, rect.height) +
       (Number.isFinite(duration) ? Math.min(duration, 10000) : 0);
     if (score > bestScore) {
       bestScore = score;
       bestVideo = video;
+      bestAdEvidence = adEvidence;
+      bestSource = String(video.currentSrc || video.src || "");
     }
   }
 
@@ -904,6 +998,8 @@ function inspectFrameInMainWorld() {
 
   return {
     activeEpisodeText: episodeText,
+    adDetected: bestAdEvidence.detected,
+    adReason: bestAdEvidence.reason,
     currentTime: Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0,
     duration:
       bestVideo && Number.isFinite(duration) && duration > 0 ? duration : 0,
@@ -922,6 +1018,7 @@ function inspectFrameInMainWorld() {
     readyState: bestVideo ? Number(bestVideo.readyState) || 0 : 0,
     score: Math.max(0, bestScore),
     url: location.href,
+    videoSource: bestSource,
     videoWidth: bestVideo ? Math.round(bestVideo.clientWidth || 0) : 0,
     videoHeight: bestVideo ? Math.round(bestVideo.clientHeight || 0) : 0
   };
@@ -1006,6 +1103,8 @@ function buildSnapshot(tab, results) {
     Core.normalizeText(bestVideo && bestVideo.frameTitle);
 
   return {
+    adDetected: Boolean(bestVideo && bestVideo.adDetected),
+    adReason: limitText(bestVideo && bestVideo.adReason, 40),
     audible: Boolean(tab.audible),
     canTrack: Boolean(bestVideo && duration > 0),
     capturedAt: Date.now(),
@@ -1020,7 +1119,8 @@ function buildSnapshot(tab, results) {
     site: site.id,
     siteLabel: site.label,
     title,
-    url: tab.url || ""
+    url: tab.url || "",
+    videoSource: limitText(bestVideo && bestVideo.videoSource, 1800)
   };
 }
 
@@ -1214,6 +1314,92 @@ function snapshotIsSameEpisode(record, snapshot) {
   return !recordedEpisode || !observedEpisode || recordedEpisode === observedEpisode;
 }
 
+function videoSourceKey(value) {
+  try {
+    const source = new URL(value);
+    return `${source.origin}${source.pathname}`;
+  } catch (_error) {
+    return limitText(value, 600);
+  }
+}
+
+function sourceLooksLikeAdvertisement(value) {
+  const key = videoSourceKey(value);
+  return /(^|[/_.-])(ad|ads|advert|advertisement|adplayer|ad-player|preroll|pre-roll|midroll|mid-roll)([/_.-]|$)/i.test(
+    key
+  );
+}
+
+function evaluateAdvertisement(snapshot, record, session, now) {
+  const duration = Math.max(0, Number(snapshot.duration) || 0);
+  const sourceKey = videoSourceKey(snapshot.videoSource || "");
+  const baseline = Math.max(
+    Number(record && record.duration) || 0,
+    Number(session.contentDuration) || 0
+  );
+
+  if (snapshot.adDetected) {
+    return { blocked: true, reason: snapshot.adReason || "ad-signal" };
+  }
+  if (sourceLooksLikeAdvertisement(snapshot.videoSource)) {
+    return { blocked: true, reason: "ad-source" };
+  }
+  if (
+    snapshot.site === "tencent" &&
+    duration > 0 &&
+    duration <= AD_DURATION_MAX_SEC
+  ) {
+    return { blocked: true, reason: "short-duration" };
+  }
+
+  if (baseline >= CONTENT_DURATION_MIN_SEC && duration > 0) {
+    if (duration <= AD_DURATION_MAX_SEC) {
+      return { blocked: true, reason: "duration-drop" };
+    }
+    if (
+      record &&
+      snapshotIsSameEpisode(record, snapshot) &&
+      duration < baseline * AD_DURATION_DROP_RATIO
+    ) {
+      return { blocked: true, reason: "duration-drop" };
+    }
+
+    const sourceChanged =
+      session.contentSourceKey &&
+      sourceKey &&
+      sourceKey !== session.contentSourceKey;
+    const significantDurationChange =
+      Math.abs(duration - baseline) / baseline > 0.2;
+    if (sourceChanged && significantDurationChange) {
+      const observationKey = [
+        sourceKey,
+        Math.round(duration),
+        Core.normalizeText(snapshot.episodeLabel)
+      ].join("|");
+      if (session.adObservationKey !== observationKey) {
+        session.adObservationKey = observationKey;
+        session.adObservationSince = now;
+      }
+      if (
+        now - Number(session.adObservationSince || now) <
+        AD_STABILITY_MS
+      ) {
+        return { blocked: true, reason: "unstable-source" };
+      }
+    }
+  }
+
+  session.adObservationKey = "";
+  session.adObservationSince = 0;
+  if (duration > 0) {
+    session.contentDuration = duration;
+  }
+  if (sourceKey) {
+    session.contentSourceKey = sourceKey;
+  }
+  return { blocked: false, reason: "" };
+}
+
 async function startTracking(message) {
   const tabId = Number(message.tabId);
   if (!tabId) {
@@ -1234,20 +1420,45 @@ async function startTracking(message) {
     Core.deriveSeriesKey(snapshot.url, snapshot.title);
   const showId = Core.createShowId(seriesKey);
   const existingRecord = await getRecord(showId);
-  const candidateRecord = recordFromSnapshot(snapshot, {
-    episodeLabel: message.episodeLabel,
-    episodeSource: message.episodeSource,
-    id: showId,
-    name: message.name || snapshot.title
+  const candidateRecord = sanitizeRecord({
+    ...recordFromSnapshot(snapshot, {
+      episodeLabel: message.episodeLabel,
+      episodeSource: message.episodeSource,
+      id: showId,
+      name: message.name || snapshot.title
+    }),
+    pinned: Boolean(existingRecord && existingRecord.pinned),
+    pinnedAt: (existingRecord && existingRecord.pinnedAt) || 0
   });
   const sessions = await loadSessions();
   const now = Date.now();
   const session = {
+    adObservationKey: "",
+    adObservationSince: 0,
+    contentDuration: Number(existingRecord && existingRecord.duration) || 0,
+    contentSourceKey: "",
     lastSyncAt: now,
     seriesKey,
     showId,
     startedAt: now
   };
+  const adGuard = evaluateAdvertisement(snapshot, existingRecord, session, now);
+  if (adGuard.blocked) {
+    session.pendingRecord = existingRecord ? null : candidateRecord;
+    sessions[tabId] = session;
+    await saveSessions();
+    setBadge(tabId, true);
+    createTrackingAlarm();
+    return {
+      advertisement: true,
+      deferredSync: false,
+      guardPending: true,
+      ok: true,
+      reason: adGuard.reason,
+      record: existingRecord,
+      session
+    };
+  }
 
   let record = candidateRecord;
   let writeResult = { episode: null, record: candidateRecord, synced: true };
@@ -1321,7 +1532,10 @@ async function updateTrackedTab(tabId, options) {
     return { active: true, written: false };
   }
 
-  const record = await getRecord(session.showId);
+  const storedRecord = await getRecord(session.showId);
+  const record =
+    storedRecord ||
+    (session.pendingRecord ? sanitizeRecord(session.pendingRecord) : null);
   if (!record) {
     delete sessions[tabId];
     await saveSessions();
@@ -1337,6 +1551,18 @@ async function updateTrackedTab(tabId, options) {
   }
 
   const now = Date.now();
+  const adGuard = evaluateAdvertisement(snapshot, record, session, now);
+  sessions[tabId] = session;
+  if (adGuard.blocked) {
+    await saveSessions();
+    return {
+      active: true,
+      guard: "advertisement",
+      reason: adGuard.reason,
+      written: false
+    };
+  }
+
   const observedEpisode =
     Core.normalizeText(snapshot.episodeLabel) || snapshot.url;
   let guardConfirmed = false;
@@ -1443,6 +1669,7 @@ async function updateTrackedTab(tabId, options) {
     device
   );
   const result = await writeRecord(updated, episodeRecord);
+  delete session.pendingRecord;
   session.lastSyncAt = now;
   sessions[tabId] = session;
   await saveSessions();
@@ -1483,6 +1710,32 @@ async function updateShow(message) {
   });
   const result = await writeRecord(updated);
   return { deferredSync: !result.synced, ok: true, record: result.record };
+}
+
+async function setShowPinned(message) {
+  const record = await getRecord(message.id);
+  if (!record) {
+    throw new Error(I18n.t("追踪记录不存在"));
+  }
+
+  const pinned = Boolean(message.pinned);
+  const now = Math.max(
+    Date.now(),
+    (Number(record.updatedAt) || 0) + 1,
+    (Number(record.pinnedAt) || 0) + 1
+  );
+  const updated = sanitizeRecord({
+    ...record,
+    pinned,
+    pinnedAt: pinned ? now : 0,
+    updatedAt: now
+  });
+  const result = await writeRecord(updated);
+  return {
+    deferredSync: !result.synced,
+    ok: true,
+    record: result.record
+  };
 }
 
 async function deleteShow(message) {
@@ -1687,6 +1940,8 @@ async function handleMessage(message) {
       return updateTrackedTab(Number(message.tabId), { force: true });
     case "VT_UPDATE_SHOW":
       return updateShow(message);
+    case "VT_SET_SHOW_PINNED":
+      return setShowPinned(message);
     case "VT_DELETE_SHOW":
       return deleteShow(message);
     case "VT_DELETE_EPISODE":

@@ -179,13 +179,50 @@ async function main() {
               return;
             }
 
+            if (message.type === "VT_SET_SHOW_PINNED") {
+              setTimeout(() => {
+                let updatedRecord = null;
+                records = records.map((record) => {
+                  if (record.id !== message.id) {
+                    return record;
+                  }
+                  updatedRecord = {
+                    ...record,
+                    pinned: message.pinned,
+                    pinnedAt: message.pinned ? Date.now() : 0
+                  };
+                  return updatedRecord;
+                });
+                callback({
+                  deferredSync: false,
+                  ok: true,
+                  record: updatedRecord
+                });
+              }, 300);
+              return;
+            }
+
+            if (message.type === "VT_SYNC_NOW") {
+              window.__syncCalls = Number(window.__syncCalls || 0) + 1;
+              callback({
+                cloudEpisodes: 2,
+                cloudShows: 2,
+                lastSyncAt: Date.now(),
+                pending: 0,
+                status: "synced"
+              });
+              return;
+            }
+
             callback({ ok: false, error: "Unexpected message" });
           });
         }
       },
       storage: {
         onChanged: {
-          addListener() {}
+          addListener(listener) {
+            window.__emitStorageChange = listener;
+          }
         }
       },
       tabs: {
@@ -226,16 +263,22 @@ async function main() {
         bodyHeight: document.body.getBoundingClientRect().height,
         horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
         rows: document.querySelectorAll(".show-row").length,
-        syncLabel: document.getElementById("syncLabel")?.textContent,
+        syncLabel: document.getElementById("syncButtonLabel")?.textContent,
         smallButtons: buttons.filter((button) => button.height < 40)
       };
     });
 
     assert.equal(metrics.activeTitle, "庆余年");
     assert.equal(metrics.rows, 2);
-    assert.equal(metrics.syncLabel, "本地云端已对齐");
+    assert.equal(metrics.syncLabel, "立即同步");
     assert.equal(metrics.horizontalOverflow, false);
     assert.deepEqual(metrics.smallButtons, []);
+
+    await page.click("#syncButton");
+    await page.waitForFunction(
+      () => document.getElementById("syncButtonLabel")?.textContent === "立即同步"
+    );
+    assert.equal(await page.evaluate(() => window.__syncCalls), 1);
 
     await page.click('.active-actions [data-action="edit"]');
     await page.waitForSelector("#editDialog[open]");
@@ -260,6 +303,82 @@ async function main() {
       fullPage: false,
       path: path.join(artifactsDirectory, "popup-start.png")
     });
+
+    await page.click("#libraryTab");
+    await page.waitForSelector("#libraryPanel:not([hidden])");
+    assert.equal(await page.locator(".show-row").count(), 2);
+
+    await page.fill("#librarySearch", "庆余年");
+    await page.waitForFunction(
+      () => document.querySelectorAll(".show-row").length === 1
+    );
+    assert.equal(await page.locator(".show-row").count(), 1);
+    await page.fill("#librarySearch", "");
+
+    const pinSecond = page.locator(
+      '.show-row [data-action="pin"][data-id="show_second"]'
+    );
+    const pinSecondBox = await pinSecond.boundingBox();
+    await page.mouse.move(
+      pinSecondBox.x + pinSecondBox.width / 2,
+      pinSecondBox.y + pinSecondBox.height / 2
+    );
+    await page.mouse.down();
+    await page.evaluate(() => {
+      window.__emitStorageChange(
+        {
+          "vt.show.show_second": {
+            newValue: { id: "show_second", pinned: false }
+          }
+        },
+        "sync"
+      );
+    });
+    await page.waitForTimeout(220);
+    await page.mouse.up();
+    const optimisticPin = await page.evaluate(() => ({
+      firstId: document.querySelector(".show-row:first-child .show-main")
+        ?.dataset.id,
+      pending: document
+        .querySelector('.show-row:first-child [data-action="pin"]')
+        ?.getAttribute("aria-busy")
+    }));
+    assert.equal(optimisticPin.firstId, "show_second");
+    assert.equal(optimisticPin.pending, "true");
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          '.show-row:first-child .show-main[data-id="show_second"]'
+        ) !== null
+    );
+    const pinnedRow = await page.evaluate(() => ({
+      id: document.querySelector(".show-row:first-child .show-main")?.dataset.id,
+      pressed: document
+        .querySelector('.show-row:first-child [data-action="pin"]')
+        ?.getAttribute("aria-pressed")
+    }));
+    assert.equal(pinnedRow.id, "show_second");
+    assert.equal(pinnedRow.pressed, "true");
+    await page.screenshot({
+      fullPage: false,
+      path: path.join(artifactsDirectory, "popup-library.png")
+    });
+    await page.waitForFunction(
+      () => !document.querySelector('[data-action="pin"][data-id="show_second"]')
+        ?.disabled
+    );
+    await page.click(
+      '.show-row [data-action="pin"][data-id="show_second"]'
+    );
+    await page.waitForFunction(
+      () => {
+        const button = document.querySelector(
+          '[data-action="pin"][data-id="show_second"]'
+        );
+        return button && !button.disabled &&
+          button.getAttribute("aria-pressed") === "false";
+      }
+    );
 
     const fixedWidth = await page.evaluate(() => ({
       body: document.body.getBoundingClientRect().width,

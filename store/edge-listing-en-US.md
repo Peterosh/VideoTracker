@@ -12,11 +12,13 @@ Track episodes and watch time across streaming sites, with browser-account sync 
 
 VideoTracker is a browser extension for keeping track of episodic video progress. It automatically detects standard HTML5 video players, including players inside iframes, and records the current show title, episode, playback position, duration, and watch time.
 
-Start tracking the current video with one click. VideoTracker saves progress during playback and provides a full management page for reviewing the position, completion status, watching device, and last update time for every episode. Separate Watch History and Devices views support search, status filters, continue watching, deleting an episode, deleting a complete show, editing device names, and exporting or importing JSON backups.
+The extension popup provides separate Current Video and Tracked Shows tabs for starting or stopping tracking, searching saved shows, and syncing immediately. The full management page includes independent Watch History and Devices views with search, status filters, pinned shows, continue watching, episode and show deletion, device renaming, and JSON backup tools.
 
 Watch data is stored locally first and synchronized with Chromium browser-sync extension storage. Synchronization pulls and merges cloud data before selectively pushing newer local records, reducing the risk of overwriting newer cloud data with stale local state. A manual Sync Now action and a clear local/cloud alignment status are available in the management page.
 
-The header provides network-information and Chinese/English controls. The device page lets users rename current and remote devices. LAN and public IP collection is optional, disabled by default, and runs only after the user explicitly enables network information. VideoTracker has no separate account system, does not sell user data, does not use advertising, and does not execute remote code.
+Advertisements do not overwrite content progress. VideoTracker recognizes common ad overlays, short Tencent Video ads, source changes, and abnormal durations, then resumes recording after stable content returns.
+
+The header provides network-information controls and a Chinese/English language menu. The device page lets users rename current and remote devices. LAN and public IP collection is optional, disabled by default, and runs only after the user explicitly enables network information. VideoTracker has no separate account system, does not sell user data, does not use advertising, and does not execute remote code.
 
 ## Single purpose
 

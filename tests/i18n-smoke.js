@@ -130,23 +130,46 @@ async function main() {
     const popup = await page.evaluate(() => ({
       brand: document.querySelector(".brand-copy strong")?.textContent,
       empty: document.querySelector(".empty-current h1")?.textContent,
-      lang: document.documentElement.lang
+      lang: document.documentElement.lang,
+      syncLabel: document.getElementById("syncButtonLabel")?.textContent,
+      tabs: Array.from(
+        document.querySelectorAll(".popup-tab"),
+        (tab) => tab.textContent.trim()
+      )
     }));
     assert.equal(popup.brand, "VideoTracker");
     assert.equal(popup.empty, "No video detected");
     assert.equal(popup.lang, "en-US");
+    assert.equal(popup.syncLabel, "Sync now");
+    assert.deepEqual(popup.tabs, ["Current video", "Tracked shows"]);
 
     const disabledNetworkCalls = await page.evaluate(() => window.__networkProbe);
     assert.deepEqual(disabledNetworkCalls, { fetchCalls: 0, peerCalls: 0 });
+
+    await page.click("#libraryTab");
+    await page.waitForSelector("#libraryPanel:not([hidden])");
+    const popupLibrary = await page.evaluate(() => ({
+      placeholder: document.getElementById("librarySearch")?.placeholder,
+      searchLabel: document.getElementById("librarySearch")?.getAttribute(
+        "aria-label"
+      )
+    }));
+    assert.equal(popupLibrary.placeholder, "Search shows or episodes");
+    assert.equal(popupLibrary.searchLabel, "Search tracked shows");
 
     await page.goto(pathToFileURL(path.join(root, "library.html")).href);
     await page.waitForSelector(".sync-card");
     const library = await page.evaluate(() => ({
       brand: document.querySelector(".brand-group h1")?.textContent,
       heading: document.getElementById("showsTitle")?.textContent,
-      headerLanguageControls: document.querySelectorAll(
-        ".app-header [data-language]"
-      ).length,
+      languageOptions: Array.from(
+        document.querySelectorAll("[data-language]"),
+        (option) => option.dataset.language
+      ),
+      languageValue: document.getElementById("languageCurrent")?.textContent,
+      languageExpanded: document
+        .getElementById("languageButton")
+        ?.getAttribute("aria-expanded"),
       headerNetworkControl: Boolean(
         document.querySelector(".app-header #networkInfoToggle")
       ),
@@ -157,7 +180,9 @@ async function main() {
     }));
     assert.equal(library.brand, "VideoTracker");
     assert.equal(library.heading, "Tracked shows");
-    assert.equal(library.headerLanguageControls, 2);
+    assert.deepEqual(library.languageOptions, ["zh", "en"]);
+    assert.equal(library.languageValue, "English");
+    assert.equal(library.languageExpanded, "false");
     assert.equal(library.headerNetworkControl, true);
     assert.equal(library.networkLabel, "Network information");
     assert.equal(library.syncState, "Local and cloud are aligned");
@@ -187,6 +212,54 @@ async function main() {
     assert.equal(englishMobile.headerOverflow, false);
     assert.equal(englishMobile.horizontalOverflow, false);
 
+    await page.click("#languageButton");
+    await page.waitForSelector("#languageOptions:not([hidden])");
+    const languageMenu = await page.evaluate(() => {
+      const menu = document
+        .getElementById("languageOptions")
+        .getBoundingClientRect();
+      return {
+        expanded: document
+          .getElementById("languageButton")
+          ?.getAttribute("aria-expanded"),
+        options: Array.from(
+          document.querySelectorAll("[data-language]"),
+          (option) => ({
+            label: option.textContent.trim(),
+            selected: option.getAttribute("aria-selected"),
+            value: option.dataset.language
+          })
+        ),
+        viewportOverflow:
+          menu.left < 0 ||
+          menu.right > window.innerWidth ||
+          menu.top < 0 ||
+          menu.bottom > window.innerHeight
+      };
+    });
+    assert.equal(languageMenu.expanded, "true");
+    assert.equal(languageMenu.viewportOverflow, false);
+    assert.deepEqual(
+      languageMenu.options.map((option) => option.label),
+      ["中文", "English"]
+    );
+    assert.equal(
+      languageMenu.options.find((option) => option.value === "en")?.selected,
+      "true"
+    );
+
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(
+      () => document.getElementById("languageOptions")?.hidden
+    );
+    await page.focus("#languageButton");
+    await page.keyboard.press("ArrowDown");
+    await page.waitForSelector("#languageOptions:not([hidden])");
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.dataset.language),
+      "en"
+    );
+
     const navigation = page.waitForNavigation({ waitUntil: "load" });
     await page.click('[data-language="zh"]');
     await navigation;
@@ -215,7 +288,14 @@ async function main() {
 
     console.log(
       JSON.stringify(
-        { devices, englishMobile, library, popup, switchedLanguage },
+        {
+          devices,
+          englishMobile,
+          library,
+          popup,
+          popupLibrary,
+          switchedLanguage
+        },
         null,
         2
       )

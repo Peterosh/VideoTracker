@@ -211,37 +211,141 @@ button {
   box-shadow: 0 0 0 3px rgba(255, 213, 138, 0.28);
 }
 
-.language-switch {
-  display: flex;
+.language-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.language-trigger {
+  display: inline-flex;
   min-height: 44px;
+  min-width: 92px;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
+  gap: 7px;
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 7px;
   background: var(--surface);
-}
-
-.language-switch button {
-  min-width: 32px;
-  min-height: 34px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
+  color: var(--text-soft);
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 650;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
 }
 
-.language-switch button:hover {
+.language-trigger:hover,
+.language-menu.is-open .language-trigger {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
-.language-switch button.is-active {
-  background: var(--surface-hover);
+.language-trigger:focus-visible {
+  border-color: rgba(244, 184, 96, 0.5);
+  box-shadow: 0 0 0 3px rgba(255, 213, 138, 0.18);
+}
+
+.language-trigger-icon {
+  color: var(--muted);
+  transition: color 180ms ease;
+}
+
+.language-menu.is-open .language-trigger-icon {
   color: var(--accent);
+}
+
+.language-current {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.language-chevron {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: translateY(-2px) rotate(45deg);
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease;
+}
+
+.language-menu.is-open .language-chevron {
+  border-color: var(--accent);
+  transform: translateY(1px) rotate(225deg);
+}
+
+.language-options {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  width: 164px;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #191c18;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
+}
+
+.language-options:not([hidden]) {
+  animation: language-menu-in 160ms ease-out;
+}
+
+.language-option {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.language-option:hover,
+.language-option:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.language-option[aria-selected="true"] {
+  background: rgba(244, 184, 96, 0.1);
+  color: var(--text);
+}
+
+.language-option-check {
+  color: var(--accent);
+  opacity: 0;
+  transform: scale(0.86);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.language-option[aria-selected="true"] .language-option-check {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .sync-pill {
@@ -991,20 +1095,33 @@ button {
 .show-item {
   display: grid;
   width: 100%;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 44px;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
   min-height: 70px;
-  padding: 9px 10px;
+  padding: 4px 6px 4px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: inherit;
-  cursor: pointer;
-  text-align: left;
   transition:
     background-color 160ms ease,
     border-color 160ms ease;
+}
+
+.show-item-main {
+  display: grid;
+  min-width: 0;
+  min-height: 60px;
+  grid-template-columns: 40px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .show-item:hover {
@@ -1014,6 +1131,29 @@ button {
 .show-item.is-active {
   border-color: rgba(244, 184, 96, 0.28);
   background: #211d14;
+}
+
+.show-item.is-pinned:not(.is-active) {
+  border-color: rgba(244, 184, 96, 0.14);
+}
+
+.show-pin-button {
+  color: var(--muted);
+}
+
+.show-pin-button.is-pinned {
+  border-color: rgba(244, 184, 96, 0.3);
+  background: rgba(244, 184, 96, 0.1);
+  color: var(--accent);
+}
+
+.show-pin-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.show-pin-button.is-pending .icon svg {
+  animation: spin 900ms linear infinite;
 }
 
 .site-marker {
@@ -1555,6 +1695,17 @@ button {
   }
 }
 
+@keyframes language-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (max-width: 900px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -1600,9 +1751,15 @@ button {
     gap: 4px;
   }
 
-  .language-switch button {
-    min-width: 26px;
-    padding: 0 4px;
+  .language-trigger {
+    min-width: 84px;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+
+  .language-options {
+    width: 156px;
   }
 
   .app-header .icon-button {

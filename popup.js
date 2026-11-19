@@ -5,21 +5,30 @@
   const I18n = globalThis.VideoTrackerI18n;
   const iconPaths = globalThis.VideoTrackerIconPaths || {};
   const state = {
+    activeTab: "current",
     deleteId: null,
     device: null,
     editId: null,
+    libraryQuery: "",
     loading: true,
+    pinPending: new Set(),
+    pinPointerActive: false,
+    pinRenderPending: false,
     records: [],
     session: null,
     snapshot: null,
+    syncing: false,
     syncIssue: null,
     syncState: null,
     tabId: null,
     toastTimer: null
   };
+  let lastLibraryRenderSignature = "";
 
   const elements = {
     currentContent: document.getElementById("currentContent"),
+    currentPanel: document.getElementById("currentPanel"),
+    currentTab: document.getElementById("currentTab"),
     deleteDialog: document.getElementById("deleteDialog"),
     deleteCopy: document.getElementById("deleteCopy"),
     deleteError: document.getElementById("deleteError"),
@@ -32,11 +41,15 @@
     editName: document.getElementById("editName"),
     libraryContent: document.getElementById("libraryContent"),
     libraryCount: document.getElementById("libraryCount"),
+    libraryPanel: document.getElementById("libraryPanel"),
+    librarySearch: document.getElementById("librarySearch"),
+    libraryTab: document.getElementById("libraryTab"),
     manageButton: document.getElementById("manageButton"),
     playbackState: document.getElementById("playbackState"),
     playbackText: document.getElementById("playbackText"),
-    syncLabel: document.getElementById("syncLabel"),
-    syncState: document.getElementById("syncState"),
+    syncButton: document.getElementById("syncButton"),
+    syncButtonLabel: document.getElementById("syncButtonLabel"),
+    tabButtons: Array.from(document.querySelectorAll("[data-tab]")),
     toast: document.getElementById("toast")
   };
 
@@ -176,28 +189,42 @@
     const synced = status === "synced";
     const failed = status === "error";
     const pending = Number(sync.pending) || 0;
-    elements.syncState.classList.toggle("is-local", failed);
-    elements.syncState.classList.toggle("is-warning", !synced && !failed);
-    elements.syncLabel.textContent = synced
-      ? I18n.t("本地云端已对齐")
-      : failed
-        ? I18n.t("同步失败")
-        : I18n.t("本地未同步");
-    elements.syncState.setAttribute(
-      "aria-label",
-      I18n.t(
-        synced
-          ? "本地存储和云端存储已同步"
-          : failed
-            ? "浏览器同步存储不可用"
-            : "本地记录尚未同步到云端"
-      )
+    elements.syncButton.classList.toggle("is-local", !synced && !failed);
+    elements.syncButton.classList.toggle("is-error", failed);
+    elements.syncButton.disabled = state.syncing;
+    elements.syncButtonLabel.textContent = I18n.t(
+      state.syncing ? "同步中" : "立即同步"
     );
-    elements.syncState.title = synced
+    elements.syncButton.setAttribute(
+      "aria-label",
+      I18n.t(state.syncing ? "同步中" : "立即同步")
+    );
+    elements.syncButton.title = state.syncing
+      ? I18n.t("同步中")
+      : synced
       ? I18n.t("本地存储与云端存储已对齐")
       : failed
         ? sync.error || I18n.t("浏览器同步存储不可用")
         : I18n.t("有 {pending} 条本地记录尚未上传", { pending });
+  }
+
+  function switchTab(tab, focusTab) {
+    const nextTab = tab === "library" ? "library" : "current";
+    state.activeTab = nextTab;
+    elements.currentPanel.hidden = nextTab !== "current";
+    elements.libraryPanel.hidden = nextTab !== "library";
+    for (const button of elements.tabButtons) {
+      const active = button.dataset.tab === nextTab;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active && focusTab) {
+        button.focus();
+      }
+    }
+    if (nextTab === "library") {
+      renderLibrary();
+    }
   }
 
   function updatePlaybackState() {
@@ -213,8 +240,14 @@
       Boolean(snapshot.paused) && !snapshot.ended
     );
     elements.playbackState.classList.toggle("is-ended", Boolean(snapshot.ended));
+    elements.playbackState.classList.toggle(
+      "is-ad",
+      Boolean(snapshot.adDetected)
+    );
 
-    if (snapshot.ended) {
+    if (snapshot.adDetected) {
+      elements.playbackText.textContent = I18n.t("广告中，暂未记录");
+    } else if (snapshot.ended) {
       elements.playbackText.textContent = I18n.t("已播完");
     } else if (snapshot.paused) {
       elements.playbackText.textContent = I18n.t("已暂停");
@@ -453,10 +486,86 @@
     return String(label || "V").trim().charAt(0).toUpperCase() || "V";
   }
 
-  function renderLibrary() {
-    elements.libraryCount.textContent = I18n.t("{count} 部", {
-      count: state.records.length
+  function applyPendingPinState(records) {
+    return records.map((record) => {
+      if (!state.pinPending.has(record.id)) {
+        return record;
+      }
+      const optimistic = state.records.find((item) => item.id === record.id);
+      return optimistic
+        ? {
+            ...record,
+            pinned: optimistic.pinned,
+            pinnedAt: optimistic.pinnedAt
+          }
+        : record;
     });
+  }
+
+  function getVisibleLibraryRecords() {
+    const query = Core.normalizeText(state.libraryQuery).toLocaleLowerCase();
+    return state.records
+      .filter((record) => {
+        if (!query) {
+          return true;
+        }
+        const haystack = [
+          record.name,
+          record.pageTitle,
+          record.episodeLabel,
+          record.siteLabel
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLocaleLowerCase();
+        return haystack.includes(query);
+      })
+      .sort((left, right) => {
+        if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+          return left.pinned ? -1 : 1;
+        }
+        if (left.pinned) {
+          const pinnedOrder =
+            Number(right.pinnedAt) - Number(left.pinnedAt);
+          if (pinnedOrder !== 0) {
+            return pinnedOrder;
+          }
+        }
+        return Number(right.updatedAt) - Number(left.updatedAt);
+      });
+  }
+
+  function renderLibrary() {
+    const visibleRecords = getVisibleLibraryRecords();
+    const activeId = trackingCurrentVideo() ? state.session.showId : null;
+    elements.libraryCount.textContent = I18n.t("{count} 部", {
+      count: visibleRecords.length
+    });
+    if (state.pinPointerActive) {
+      state.pinRenderPending = true;
+      return;
+    }
+    const renderSignature = JSON.stringify({
+      activeId,
+      query: state.libraryQuery,
+      records: visibleRecords.map((record) => ({
+        duration: record.duration,
+        episodeLabel: record.episodeLabel,
+        id: record.id,
+        name: record.name,
+        pending: state.pinPending.has(record.id),
+        pinned: Boolean(record.pinned),
+        pinnedAt: Number(record.pinnedAt) || 0,
+        position: record.position,
+        site: record.site,
+        siteLabel: record.siteLabel
+      })),
+      total: state.records.length
+    });
+    if (renderSignature === lastLibraryRenderSignature) {
+      return;
+    }
+    lastLibraryRenderSignature = renderSignature;
 
     if (!state.records.length) {
       elements.libraryContent.innerHTML = `
@@ -469,8 +578,18 @@
       return;
     }
 
-    const activeId = trackingCurrentVideo() ? state.session.showId : null;
-    const rows = state.records
+    if (!visibleRecords.length) {
+      elements.libraryContent.innerHTML = `
+        <div class="library-empty">
+          ${iconMarkup("search", 18)}
+          <span>没有匹配记录</span>
+        </div>
+      `;
+      I18n.localize(elements.libraryContent);
+      return;
+    }
+
+    const rows = visibleRecords
       .map((record) => {
         const progress = Core.calculateProgress(record.position, record.duration);
         const positionLabel = Core.formatTime(record.position);
@@ -478,6 +597,7 @@
           record.episodeLabel || I18n.t("集数待识别")
         );
         const isCurrent = record.id === activeId;
+        const pinPending = state.pinPending.has(record.id);
         return `
           <article class="show-row">
             <span
@@ -521,6 +641,35 @@
               title="${escapeAttr(I18n.t("编辑记录"))}"
             >
               ${iconMarkup("pencil", 16)}
+            </button>
+            <button
+              class="icon-button pin-button${record.pinned ? " is-pinned" : ""}${
+                pinPending ? " is-pending" : ""
+              }"
+              type="button"
+              data-action="pin"
+              data-id="${escapeAttr(record.id)}"
+              ${pinPending ? "disabled aria-busy=\"true\"" : ""}
+              aria-label="${escapeAttr(
+                pinPending
+                  ? I18n.t("处理中")
+                  : I18n.t(
+                      record.pinned ? "取消置顶{name}" : "置顶{name}",
+                      { name: record.name }
+                    )
+              )}"
+              aria-pressed="${Boolean(record.pinned)}"
+              title="${escapeAttr(
+                I18n.t(
+                  pinPending
+                    ? "处理中"
+                    : record.pinned
+                      ? "取消置顶"
+                      : "置顶"
+                )
+              )}"
+            >
+              ${iconMarkup(pinPending ? "loader-circle" : "pin", 16)}
             </button>
             <button
               class="icon-button is-danger"
@@ -624,7 +773,9 @@
       throw new Error(appState.error || I18n.t("无法读取追踪记录"));
     }
 
-    state.records = Array.isArray(appState.records) ? appState.records : [];
+    state.records = applyPendingPinState(
+      Array.isArray(appState.records) ? appState.records : []
+    );
     state.session = appState.session || null;
     state.syncIssue = appState.syncIssue || null;
     state.syncState = appState.syncState || null;
@@ -641,6 +792,89 @@
     } else {
       renderAll();
     }
+  }
+
+  async function syncNow() {
+    if (state.syncing) {
+      return;
+    }
+
+    state.syncing = true;
+    updateSyncState();
+    try {
+      const response = await sendRuntime({ type: "VT_SYNC_NOW" });
+      if (!response || response.ok === false || response.error) {
+        throw new Error(
+          (response && response.error) || I18n.t("同步失败")
+        );
+      }
+      await refreshApp({ refreshSnapshot: false, renderCurrent: false });
+      const synced = response.status === "synced";
+      showToast(I18n.t(synced ? "同步完成" : "本地未同步"), !synced);
+    } catch (error) {
+      showToast(error.message || I18n.t("同步失败"), true);
+    } finally {
+      state.syncing = false;
+      updateSyncState();
+    }
+  }
+
+  async function togglePin(recordId) {
+    if (state.pinPending.has(recordId)) {
+      return;
+    }
+    const record = state.records.find((item) => item.id === recordId);
+    if (!record) {
+      return;
+    }
+
+    const previousPinState = {
+      pinned: Boolean(record.pinned),
+      pinnedAt: Number(record.pinnedAt) || 0,
+      updatedAt: Number(record.updatedAt) || 0
+    };
+    const pinned = !record.pinned;
+    const optimisticAt = Date.now();
+    state.pinPending.add(recordId);
+    state.records = state.records.map((item) =>
+      item.id === recordId
+        ? {
+            ...item,
+            pinned,
+            pinnedAt: pinned ? optimisticAt : 0,
+            updatedAt: optimisticAt
+          }
+        : item
+    );
+    renderLibrary();
+
+    const response = await sendRuntime({
+      id: recordId,
+      pinned,
+      type: "VT_SET_SHOW_PINNED"
+    });
+    state.pinPending.delete(recordId);
+    if (!response.ok) {
+      state.records = state.records.map((item) =>
+        item.id === recordId ? { ...item, ...previousPinState } : item
+      );
+      renderLibrary();
+      showToast(response.error || I18n.t("置顶失败"), true);
+      return;
+    }
+
+    if (response.record) {
+      state.records = state.records.map((item) =>
+        item.id === recordId ? { ...item, ...response.record } : item
+      );
+    }
+    renderLibrary();
+    showToast(
+      I18n.t(
+        pinned ? "已置顶{name}" : "已取消置顶{name}",
+        { name: record.name }
+      )
+    );
   }
 
   async function loadInitial() {
@@ -707,7 +941,11 @@
     await refreshApp({ refreshSnapshot: true });
     showToast(
       I18n.t(
-        response.deferredSync ? "已记录，当前保存在本机" : "已开始追踪"
+        response.advertisement
+          ? "检测到广告，正片开始后自动记录"
+          : response.deferredSync
+            ? "已记录，当前保存在本机"
+            : "已开始追踪"
       )
     );
   }
@@ -881,6 +1119,8 @@
       await openRecord(recordId);
     } else if (action === "edit") {
       openEditDialog(recordId);
+    } else if (action === "pin") {
+      await togglePin(recordId);
     } else if (action === "delete") {
       openDeleteDialog(recordId);
     }
@@ -900,8 +1140,62 @@
   function bindEvents() {
     document.addEventListener("click", handleClick);
     document.addEventListener("submit", handleSubmit);
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.target.closest?.('[data-action="pin"]')) {
+          state.pinPointerActive = true;
+        }
+      },
+      true
+    );
+    const finishPinPointer = () => {
+      if (!state.pinPointerActive) {
+        return;
+      }
+      state.pinPointerActive = false;
+      if (state.pinRenderPending) {
+        state.pinRenderPending = false;
+        setTimeout(renderLibrary, 0);
+      }
+    };
+    document.addEventListener("pointerup", finishPinPointer, true);
+    document.addEventListener("pointercancel", finishPinPointer, true);
+    window.addEventListener("blur", finishPinPointer);
+    elements.syncButton.addEventListener("click", () => {
+      void syncNow();
+    });
     elements.manageButton.addEventListener("click", () => {
       chrome.tabs.create({ url: chrome.runtime.getURL("library.html") });
+    });
+    for (const button of elements.tabButtons) {
+      button.addEventListener("click", () => {
+        switchTab(button.dataset.tab, false);
+      });
+      button.addEventListener("keydown", (event) => {
+        if (
+          event.key !== "ArrowLeft" &&
+          event.key !== "ArrowRight" &&
+          event.key !== "Home" &&
+          event.key !== "End"
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const nextTab =
+          event.key === "Home"
+            ? "current"
+            : event.key === "End"
+              ? "library"
+              : button.dataset.tab === "current"
+                ? "library"
+                : "current";
+        switchTab(nextTab, true);
+      });
+    }
+    elements.librarySearch.addEventListener("input", () => {
+      state.libraryQuery = elements.librarySearch.value;
+      renderLibrary();
     });
 
     elements.editAuto.addEventListener("change", () => {
@@ -946,6 +1240,7 @@
 
   hydrateIcons(document);
   I18n.localize(document);
+  switchTab("current", false);
   bindEvents();
   loadInitial();
 

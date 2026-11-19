@@ -4,13 +4,18 @@
   const Core = globalThis.VideoTrackerCore;
   const I18n = globalThis.VideoTrackerI18n;
   const iconPaths = globalThis.VideoTrackerIconPaths || {};
+  const languageLabels = { en: "English", zh: "中文" };
   const state = {
     device: null,
     devices: [],
     episodes: [],
     filter: "all",
+    languageMenuOpen: false,
     networkInfoEnabled: false,
     pendingDelete: null,
+    pinPending: new Set(),
+    pinPointerActive: false,
+    pinRenderPending: false,
     query: "",
     selectedShowId: null,
     shows: [],
@@ -19,6 +24,7 @@
     toastTimer: null,
     view: "library"
   };
+  let lastShowsRenderSignature = "";
 
   const elements = {
     cancelDeleteButton: document.getElementById("cancelDeleteButton"),
@@ -30,7 +36,13 @@
     deviceNetworkState: document.getElementById("deviceNetworkState"),
     devicesTab: document.getElementById("devicesTab"),
     devicesView: document.getElementById("devicesView"),
-    languageButtons: Array.from(document.querySelectorAll("[data-language]")),
+    languageButton: document.getElementById("languageButton"),
+    languageCurrent: document.getElementById("languageCurrent"),
+    languageMenu: document.getElementById("languageMenu"),
+    languageOptions: document.getElementById("languageOptions"),
+    languageOptionButtons: Array.from(
+      document.querySelectorAll("[data-language]")
+    ),
     libraryTab: document.getElementById("libraryTab"),
     libraryView: document.getElementById("libraryView"),
     networkInfoToggle: document.getElementById("networkInfoToggle"),
@@ -192,9 +204,45 @@
     return haystack.includes(query);
   }
 
+  function sortShows(records) {
+    return [...records].sort((left, right) => {
+      if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+        return left.pinned ? -1 : 1;
+      }
+      if (left.pinned) {
+        const pinnedOrder =
+          Number(right.pinnedAt) - Number(left.pinnedAt);
+        if (pinnedOrder !== 0) {
+          return pinnedOrder;
+        }
+      }
+      return Number(right.updatedAt) - Number(left.updatedAt);
+    });
+  }
+
+  function applyPendingPinState(records) {
+    return sortShows(
+      records.map((show) => {
+        if (!state.pinPending.has(show.id)) {
+          return show;
+        }
+        const optimistic = state.shows.find((item) => item.id === show.id);
+        return optimistic
+          ? {
+              ...show,
+              pinned: optimistic.pinned,
+              pinnedAt: optimistic.pinnedAt
+            }
+          : show;
+      })
+    );
+  }
+
   function getVisibleShows() {
     const query = Core.normalizeText(state.query).toLocaleLowerCase();
-    return state.shows.filter((show) => showMatchesQuery(show, query));
+    return sortShows(
+      state.shows.filter((show) => showMatchesQuery(show, query))
+    );
   }
 
   function updateSyncState() {
@@ -246,6 +294,57 @@
       "is-active",
       Boolean(state.networkInfoEnabled)
     );
+  }
+
+  function updateLanguageMenu() {
+    elements.languageCurrent.textContent =
+      languageLabels[I18n.language] || languageLabels.zh;
+    for (const button of elements.languageOptionButtons) {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.language === I18n.language)
+      );
+    }
+  }
+
+  function setLanguageMenuOpen(open, focusOption) {
+    state.languageMenuOpen = Boolean(open);
+    elements.languageMenu.classList.toggle(
+      "is-open",
+      state.languageMenuOpen
+    );
+    elements.languageButton.setAttribute(
+      "aria-expanded",
+      String(state.languageMenuOpen)
+    );
+    elements.languageOptions.hidden = !state.languageMenuOpen;
+    if (!state.languageMenuOpen) {
+      return;
+    }
+
+    updateLanguageMenu();
+    if (focusOption) {
+      const selected =
+        elements.languageOptionButtons.find(
+          (button) => button.dataset.language === I18n.language
+        ) || elements.languageOptionButtons[0];
+      selected?.focus();
+    }
+  }
+
+  function focusLanguageOption(direction) {
+    const buttons = elements.languageOptionButtons;
+    if (!buttons.length) {
+      return;
+    }
+    const currentIndex = buttons.indexOf(document.activeElement);
+    const fallback = buttons.findIndex(
+      (button) => button.dataset.language === I18n.language
+    );
+    const startIndex = currentIndex >= 0 ? currentIndex : Math.max(0, fallback);
+    const nextIndex =
+      (startIndex + direction + buttons.length) % buttons.length;
+    buttons[nextIndex].focus();
   }
 
   function switchView(view, updateHash) {
@@ -352,6 +451,31 @@
   function renderShows() {
     const visibleShows = getVisibleShows();
     elements.showCount.textContent = String(visibleShows.length);
+    if (state.pinPointerActive) {
+      state.pinRenderPending = true;
+      return;
+    }
+    const renderSignature = JSON.stringify({
+      query: state.query,
+      selectedShowId: state.selectedShowId,
+      shows: visibleShows.map((show) => ({
+        active: show.id === state.selectedShowId,
+        episodeCount: getEpisodesForShow(show.id).length,
+        episodeLabel: show.episodeLabel,
+        id: show.id,
+        name: show.name,
+        pending: state.pinPending.has(show.id),
+        pinned: Boolean(show.pinned),
+        pinnedAt: Number(show.pinnedAt) || 0,
+        site: show.site,
+        siteLabel: show.siteLabel
+      })),
+      total: state.shows.length
+    });
+    if (renderSignature === lastShowsRenderSignature) {
+      return;
+    }
+    lastShowsRenderSignature = renderSignature;
 
     if (!state.shows.length) {
       elements.showsList.innerHTML = `
@@ -381,31 +505,64 @@
       .map((show) => {
         const episodes = getEpisodesForShow(show.id);
         const active = show.id === state.selectedShowId;
+        const pinPending = state.pinPending.has(show.id);
         return `
-          <button
-            class="show-item${active ? " is-active" : ""}"
-            type="button"
-            data-show-id="${escapeAttr(show.id)}"
-            aria-pressed="${active}"
-          >
-            <span
-              class="site-marker"
-              data-site="${escapeAttr(show.site)}"
-              aria-hidden="true"
-            >${escapeHtml(siteInitial(show.site, show.siteLabel))}</span>
-            <span class="show-copy">
-              <span class="show-name">${escapeHtml(show.name)}</span>
-              <span class="show-meta">
-                ${escapeHtml(
-                  I18n.episodeLabel(show.episodeLabel || "集数待识别")
-                )}
-                · ${escapeHtml(
-                  I18n.t("{count} 集记录", { count: episodes.length })
-                )}
+          <div class="show-item${active ? " is-active" : ""}${
+            show.pinned ? " is-pinned" : ""
+          }">
+            <button
+              class="show-item-main"
+              type="button"
+              data-show-id="${escapeAttr(show.id)}"
+              aria-pressed="${active}"
+            >
+              <span
+                class="site-marker"
+                data-site="${escapeAttr(show.site)}"
+                aria-hidden="true"
+              >${escapeHtml(siteInitial(show.site, show.siteLabel))}</span>
+              <span class="show-copy">
+                <span class="show-name">${escapeHtml(show.name)}</span>
+                <span class="show-meta">
+                  ${escapeHtml(
+                    I18n.episodeLabel(show.episodeLabel || "集数待识别")
+                  )}
+                  · ${escapeHtml(
+                    I18n.t("{count} 集记录", { count: episodes.length })
+                  )}
+                </span>
               </span>
-            </span>
-            <span class="chevron">${iconMarkup("chevron-right", 16)}</span>
-          </button>
+              <span class="chevron">${iconMarkup("chevron-right", 16)}</span>
+            </button>
+            <button
+              class="icon-button show-pin-button${show.pinned ? " is-pinned" : ""}${
+                pinPending ? " is-pending" : ""
+              }"
+              type="button"
+              data-pin-show-id="${escapeAttr(show.id)}"
+              ${pinPending ? "disabled aria-busy=\"true\"" : ""}
+              aria-label="${escapeAttr(
+                pinPending
+                  ? I18n.t("处理中")
+                  : I18n.t(
+                      show.pinned ? "取消置顶{name}" : "置顶{name}",
+                      { name: show.name }
+                    )
+              )}"
+              aria-pressed="${Boolean(show.pinned)}"
+              title="${escapeAttr(
+                I18n.t(
+                  pinPending
+                    ? "处理中"
+                    : show.pinned
+                      ? "取消置顶"
+                      : "置顶"
+                )
+              )}"
+            >
+              ${iconMarkup(pinPending ? "loader-circle" : "pin", 16)}
+            </button>
+          </div>
         `;
       })
       .join("");
@@ -654,7 +811,9 @@
         throw new Error(response.error || I18n.t("无法读取观看记录"));
       }
 
-      state.shows = Array.isArray(response.shows) ? response.shows : [];
+      state.shows = applyPendingPinState(
+        Array.isArray(response.shows) ? response.shows : []
+      );
       state.episodes = Array.isArray(response.episodes) ? response.episodes : [];
       state.syncIssue = response.syncIssue || null;
       state.syncState = response.syncState || null;
@@ -877,6 +1036,70 @@
     );
   }
 
+  async function toggleShowPin(showId) {
+    if (state.pinPending.has(showId)) {
+      return;
+    }
+    const show = state.shows.find((item) => item.id === showId);
+    if (!show) {
+      return;
+    }
+
+    const previousPinState = {
+      pinned: Boolean(show.pinned),
+      pinnedAt: Number(show.pinnedAt) || 0,
+      updatedAt: Number(show.updatedAt) || 0
+    };
+    const pinned = !show.pinned;
+    const optimisticAt = Date.now();
+    state.pinPending.add(showId);
+    state.shows = sortShows(
+      state.shows.map((item) =>
+        item.id === showId
+          ? {
+              ...item,
+              pinned,
+              pinnedAt: pinned ? optimisticAt : 0,
+              updatedAt: optimisticAt
+            }
+          : item
+      )
+    );
+    renderShows();
+
+    const response = await sendRuntime({
+      id: showId,
+      pinned,
+      type: "VT_SET_SHOW_PINNED"
+    });
+    state.pinPending.delete(showId);
+    if (!response.ok) {
+      state.shows = sortShows(
+        state.shows.map((item) =>
+          item.id === showId ? { ...item, ...previousPinState } : item
+        )
+      );
+      renderShows();
+      showToast(response.error || I18n.t("置顶失败"), true);
+      return;
+    }
+
+    if (response.record) {
+      state.shows = sortShows(
+        state.shows.map((item) =>
+          item.id === showId ? { ...item, ...response.record } : item
+        )
+      );
+    }
+    renderShows();
+    showToast(
+      I18n.t(
+        pinned ? "已置顶{name}" : "已取消置顶{name}",
+        { name: show.name }
+      )
+    );
+  }
+
   document.addEventListener("click", (event) => {
     const deleteShowButton = event.target.closest("[data-delete-show]");
     if (deleteShowButton) {
@@ -900,6 +1123,12 @@
       return;
     }
 
+    const pinShowButton = event.target.closest("[data-pin-show-id]");
+    if (pinShowButton) {
+      void toggleShowPin(pinShowButton.dataset.pinShowId);
+      return;
+    }
+
     const showButton = event.target.closest("[data-show-id]");
     if (showButton) {
       state.selectedShowId = showButton.dataset.showId;
@@ -920,6 +1149,29 @@
       void openUrl(openButton.dataset.openUrl);
     }
   });
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.target.closest?.("[data-pin-show-id]")) {
+        state.pinPointerActive = true;
+      }
+    },
+    true
+  );
+  const finishPinPointer = () => {
+    if (!state.pinPointerActive) {
+      return;
+    }
+    state.pinPointerActive = false;
+    if (state.pinRenderPending) {
+      state.pinRenderPending = false;
+      setTimeout(renderShows, 0);
+    }
+  };
+  document.addEventListener("pointerup", finishPinPointer, true);
+  document.addEventListener("pointercancel", finishPinPointer, true);
+  window.addEventListener("blur", finishPinPointer);
 
   elements.showSearch.addEventListener("input", () => {
     state.query = elements.showSearch.value;
@@ -1044,19 +1296,69 @@
   window.addEventListener("hashchange", () => {
     switchView(location.hash === "#devices" ? "devices" : "library", false);
   });
-  for (const button of elements.languageButtons) {
-    button.classList.toggle(
-      "is-active",
-      button.dataset.language === I18n.language
-    );
-    button.setAttribute(
-      "aria-pressed",
-      String(button.dataset.language === I18n.language)
-    );
+  updateLanguageMenu();
+  elements.languageButton.addEventListener("click", () => {
+    setLanguageMenuOpen(!state.languageMenuOpen, false);
+  });
+  elements.languageButton.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.languageMenuOpen) {
+      event.preventDefault();
+      setLanguageMenuOpen(false, false);
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+      return;
+    }
+    event.preventDefault();
+    setLanguageMenuOpen(true, true);
+  });
+  for (const button of elements.languageOptionButtons) {
     button.addEventListener("click", () => {
-      I18n.setLanguage(button.dataset.language);
+      const language = button.dataset.language;
+      setLanguageMenuOpen(false, false);
+      if (language !== I18n.language) {
+        I18n.setLanguage(language);
+      }
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        focusLanguageOption(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        elements.languageOptionButtons[
+          event.key === "Home"
+            ? 0
+            : elements.languageOptionButtons.length - 1
+        ]?.focus();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setLanguageMenuOpen(false, false);
+        elements.languageButton.focus();
+      } else if (event.key === "Tab") {
+        setLanguageMenuOpen(false, false);
+      }
     });
   }
+  elements.languageMenu.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!elements.languageMenu.contains(document.activeElement)) {
+        setLanguageMenuOpen(false, false);
+      }
+    }, 0);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      state.languageMenuOpen &&
+      !elements.languageMenu.contains(event.target)
+    ) {
+      setLanguageMenuOpen(false, false);
+    }
+  });
 
   if (chrome.storage && chrome.storage.onChanged) {
     let refreshTimer = null;

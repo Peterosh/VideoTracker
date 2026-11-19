@@ -49,13 +49,30 @@ function createFixtureServer() {
     <style>
       body { margin: 0; background: #000; }
       video { display: block; width: 960px; height: 540px; background: #000; }
+      .player-shell { position: relative; width: 960px; height: 540px; }
+      .txp_ad {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.75);
+        color: #fff;
+        font: 14px sans-serif;
+      }
     </style>
   </head>
   <body>
-    <video id="fixture-video" src="/episode.webm" controls muted preload="auto"></video>
+    <div class="player-shell">
+      <video id="fixture-video" src="/episode.webm" controls muted preload="auto"></video>
+      <div id="fixture-ad" class="txp_ad" hidden>广告 10 秒</div>
+    </div>
     <script>
       const video = document.getElementById("fixture-video");
+      const ad = document.getElementById("fixture-ad");
       window.__fixturePlayback = {
+        hideAd() {
+          ad.hidden = true;
+        },
         async seek(value) {
           await new Promise((resolve) => {
             video.addEventListener("seeked", resolve, { once: true });
@@ -64,6 +81,9 @@ function createFixtureServer() {
         },
         pause() {
           video.pause();
+        },
+        showAd() {
+          ad.hidden = false;
         }
       };
     </script>
@@ -225,6 +245,21 @@ async function main() {
     assert.equal(stored[recordKey].position, 4.5);
     assert.equal(stored[recordKey].episodeLabel, "第 12 集");
 
+    await playerFrame.evaluate(() => window.__fixturePlayback.showAd());
+    const adSnapshot = await sendRuntime(extensionPage, {
+      tabId: watchTab.id,
+      type: "VT_GET_SNAPSHOT"
+    });
+    assert.equal(adSnapshot.adDetected, true);
+    assert.equal(adSnapshot.adReason, "overlay");
+    const adSync = await sendRuntime(extensionPage, {
+      tabId: watchTab.id,
+      type: "VT_SYNC_TAB"
+    });
+    assert.equal(adSync.guard, "advertisement");
+    assert.equal(adSync.written, false);
+    await playerFrame.evaluate(() => window.__fixturePlayback.hideAd());
+
     const libraryPage = await context.newPage();
     await libraryPage.goto(`chrome-extension://${extensionId}/library.html`);
     await libraryPage.waitForSelector(".episode-row");
@@ -235,11 +270,52 @@ async function main() {
     assert.equal(libraryState.showName, "庆余年");
     assert.equal(libraryState.episodeLabel, "第 12 集");
 
+    const pinSelector = `[data-pin-show-id="${stored[recordKey].id}"]`;
+    await libraryPage.click(pinSelector);
+    await libraryPage.waitForFunction(
+      (selector) => {
+        const button = document.querySelector(selector);
+        return button && !button.disabled &&
+          button.getAttribute("aria-pressed") === "true";
+      },
+      pinSelector
+    );
+    const pinnedRecord = await worker.evaluate(
+      (key) =>
+        new Promise((resolve) => {
+          chrome.storage.sync.get(key, (result) => resolve(result[key]));
+        }),
+      recordKey
+    );
+    assert.equal(pinnedRecord.pinned, true);
+
+    await libraryPage.click(pinSelector);
+    await libraryPage.waitForFunction(
+      (selector) => {
+        const button = document.querySelector(selector);
+        return button && !button.disabled &&
+          button.getAttribute("aria-pressed") === "false";
+      },
+      pinSelector
+    );
+    const unpinnedRecord = await worker.evaluate(
+      (key) =>
+        new Promise((resolve) => {
+          chrome.storage.sync.get(key, (result) => resolve(result[key]));
+        }),
+      recordKey
+    );
+    assert.equal(unpinnedRecord.pinned, false);
+
     console.log(
       JSON.stringify(
         {
           extensionId,
           libraryState,
+          pinState: {
+            pinned: pinnedRecord.pinned,
+            unpinned: unpinnedRecord.pinned
+          },
           record: stored[recordKey],
           snapshot
         },

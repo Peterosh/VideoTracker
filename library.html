@@ -27,9 +27,66 @@
             <input id="networkInfoToggle" type="checkbox">
             <span class="toggle-control" aria-hidden="true"></span>
           </label>
-          <div class="language-switch" role="group" aria-label="语言">
-            <button type="button" data-language="zh">中</button>
-            <button type="button" data-language="en">EN</button>
+          <div class="language-menu" id="languageMenu">
+            <button
+              class="language-trigger"
+              id="languageButton"
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="languageOptions"
+              aria-label="语言"
+              title="语言"
+            >
+              <span
+                class="icon language-trigger-icon"
+                data-icon="languages"
+                data-icon-size="15"
+              ></span>
+              <span class="language-current" id="languageCurrent">中文</span>
+              <span class="language-chevron" aria-hidden="true"></span>
+            </button>
+            <div
+              class="language-options"
+              id="languageOptions"
+              role="listbox"
+              aria-label="语言"
+              aria-orientation="vertical"
+              hidden
+            >
+              <button
+                class="language-option"
+                type="button"
+                role="option"
+                data-language="zh"
+                aria-selected="true"
+                tabindex="-1"
+              >
+                <span>中文</span>
+                <span
+                  class="icon language-option-check"
+                  data-icon="check"
+                  data-icon-size="15"
+                  aria-hidden="true"
+                ></span>
+              </button>
+              <button
+                class="language-option"
+                type="button"
+                role="option"
+                data-language="en"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span>English</span>
+                <span
+                  class="icon language-option-check"
+                  data-icon="check"
+                  data-icon-size="15"
+                  aria-hidden="true"
+                ></span>
+              </button>
+            </div>
           </div>
           <button
             class="icon-button"

@@ -146,17 +146,16 @@ async function main() {
       awaitPromise: true,
       expression: `JSON.stringify((() => {
         const brand = document.querySelector(".brand").getBoundingClientRect();
-        const sync = document.querySelector(".sync-state").getBoundingClientRect();
+        const sync = document.querySelector(".sync-button").getBoundingClientRect();
         const current = document.querySelector(".current-section").getBoundingClientRect();
-        const heading = document.querySelector("#libraryTitle").getBoundingClientRect();
         return {
           bodyWidth: document.body.getBoundingClientRect().width,
           brandRight: brand.right,
           currentWidth: current.width,
           documentScrollWidth: document.documentElement.scrollWidth,
-          headingHeight: heading.height,
           innerWidth: window.innerWidth,
-          syncLeft: sync.left
+          syncLeft: sync.left,
+          syncLabel: document.getElementById("syncButtonLabel")?.textContent
         };
       })())`,
       returnByValue: true
@@ -170,11 +169,31 @@ async function main() {
       metrics.brandRight <= metrics.syncLeft,
       "brand and sync status must not overlap"
     );
+    assert.equal(metrics.syncLabel, "立即同步");
     assert.ok(
       metrics.documentScrollWidth <= metrics.innerWidth + 1,
       "popup should not have horizontal overflow"
     );
-    assert.ok(metrics.headingHeight <= 30, "library heading should remain on one line");
+
+    const tabEvaluation = await cdp.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `(async () => {
+        document.getElementById("libraryTab").click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return JSON.stringify({
+          libraryHidden: document.getElementById("libraryPanel").hidden,
+          searchHeight: document.querySelector(".library-search")
+            .getBoundingClientRect().height,
+          selected: document.getElementById("libraryTab")
+            .getAttribute("aria-selected")
+        });
+      })()`,
+      returnByValue: true
+    });
+    const tabMetrics = JSON.parse(tabEvaluation.result.value);
+    assert.equal(tabMetrics.libraryHidden, false);
+    assert.equal(tabMetrics.selected, "true");
+    assert.ok(tabMetrics.searchHeight >= 40);
 
     const screenshot = await cdp.send("Page.captureScreenshot", {
       captureBeyondViewport: false,
@@ -185,7 +204,13 @@ async function main() {
       Buffer.from(screenshot.data, "base64")
     );
 
-    console.log(JSON.stringify({ metrics, screenshot: "artifacts/popup-action.png" }, null, 2));
+    console.log(
+      JSON.stringify(
+        { metrics, screenshot: "artifacts/popup-action.png", tabMetrics },
+        null,
+        2
+      )
+    );
   } finally {
     if (cdp) {
       cdp.close();

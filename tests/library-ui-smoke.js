@@ -241,6 +241,35 @@ async function main() {
                 });
                 return;
               }
+              if (message.type === "VT_SET_SHOW_PINNED") {
+                setTimeout(() => {
+                  let updatedRecord = null;
+                  currentState.shows = currentState.shows
+                    .map((show) => {
+                      if (show.id !== message.id) {
+                        return show;
+                      }
+                      updatedRecord = {
+                        ...show,
+                        pinned: message.pinned,
+                        pinnedAt: message.pinned ? Date.now() : 0
+                      };
+                      return updatedRecord;
+                    })
+                    .sort((left, right) => {
+                      if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+                        return left.pinned ? -1 : 1;
+                      }
+                      return Number(right.updatedAt) - Number(left.updatedAt);
+                    });
+                  callback({
+                    deferredSync: false,
+                    ok: true,
+                    record: updatedRecord
+                  });
+                }, 300);
+                return;
+              }
               callback({ ok: false, error: "Unexpected message" });
             });
           }
@@ -299,6 +328,29 @@ async function main() {
     assert.equal(desktopMetrics.publicIpCell, "公网 36.110.12.34");
     assert.equal(desktopMetrics.horizontalOverflow, false);
 
+    await page.click("#languageButton");
+    await page.waitForSelector("#languageOptions:not([hidden])");
+    const languageMenu = await page.evaluate(() => {
+      const menu = document.getElementById("languageOptions").getBoundingClientRect();
+      return {
+        selected: document
+          .querySelector('[data-language="zh"]')
+          ?.getAttribute("aria-selected"),
+        viewportOverflow:
+          menu.left < 0 ||
+          menu.right > window.innerWidth ||
+          menu.top < 0 ||
+          menu.bottom > window.innerHeight
+      };
+    });
+    assert.equal(languageMenu.selected, "true");
+    assert.equal(languageMenu.viewportOverflow, false);
+    await page.screenshot({
+      fullPage: false,
+      path: path.join(artifactsDirectory, "language-menu.png")
+    });
+    await page.click("#languageButton");
+
     await page.click("#devicesTab");
     await page.waitForSelector(".device-view:not([hidden])");
     const deviceRows = await page.locator(".device-row").count();
@@ -334,6 +386,65 @@ async function main() {
       fullPage: false,
       path: path.join(artifactsDirectory, "library-desktop.png")
     });
+
+    const pinTencent = page.locator('[data-pin-show-id="show_tencent"]');
+    const pinTencentBox = await pinTencent.boundingBox();
+    await page.mouse.move(
+      pinTencentBox.x + pinTencentBox.width / 2,
+      pinTencentBox.y + pinTencentBox.height / 2
+    );
+    await page.mouse.down();
+    await page.evaluate(() => {
+      window.__emitStorageChange(
+        {
+          "vt.show.show_tencent": {
+            newValue: { id: "show_tencent", pinned: false }
+          }
+        },
+        "sync"
+      );
+    });
+    await page.waitForTimeout(220);
+    await page.mouse.up();
+    const optimisticPin = await page.evaluate(() => ({
+      firstShowId: document
+        .querySelector(".show-item [data-show-id]")
+        ?.getAttribute("data-show-id"),
+      pending: document
+        .querySelector(".show-item [data-pin-show-id]")
+        ?.getAttribute("aria-busy")
+    }));
+    assert.equal(optimisticPin.firstShowId, "show_tencent");
+    assert.equal(optimisticPin.pending, "true");
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".show-item [data-show-id]")
+          ?.getAttribute("data-show-id") === "show_tencent"
+    );
+    const pinnedShow = await page.evaluate(() => ({
+      firstShowId: document
+        .querySelector(".show-item [data-show-id]")
+        ?.getAttribute("data-show-id"),
+      pressed: document
+        .querySelector('[data-pin-show-id="show_tencent"]')
+        ?.getAttribute("aria-pressed")
+    }));
+    assert.equal(pinnedShow.firstShowId, "show_tencent");
+    assert.equal(pinnedShow.pressed, "true");
+    await page.waitForFunction(
+      () => !document.querySelector('[data-pin-show-id="show_tencent"]')
+        ?.disabled
+    );
+    await page.click('[data-pin-show-id="show_tencent"]');
+    await page.waitForFunction(
+      () => {
+        const button = document.querySelector(
+          '[data-pin-show-id="show_tencent"]'
+        );
+        return button && !button.disabled &&
+          button.getAttribute("aria-pressed") === "false";
+      }
+    );
 
     await page.click('[data-filter="complete"]');
     const completeRows = await page.locator(".episode-row").count();

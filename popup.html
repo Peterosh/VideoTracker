@@ -20,15 +20,16 @@
           </span>
         </div>
         <div class="topbar-actions">
-          <div
-            class="sync-state"
-            id="syncState"
-            title="记录通过浏览器账户同步"
-            aria-label="浏览器同步"
+          <button
+            class="sync-button"
+            id="syncButton"
+            type="button"
+            title="立即同步"
+            aria-label="立即同步"
           >
-            <span class="sync-dot" aria-hidden="true"></span>
-            <span id="syncLabel">浏览器同步</span>
-          </div>
+            <span class="icon" data-icon="refresh-cw" data-icon-size="15"></span>
+            <span id="syncButtonLabel">立即同步</span>
+          </button>
           <button
             class="icon-button manage-button"
             id="manageButton"
@@ -41,38 +42,91 @@
         </div>
       </header>
 
-      <main>
-        <section class="current-section" aria-labelledby="currentLabel">
-          <div class="section-kicker">
-            <span class="eyebrow" id="currentLabel">当前视频</span>
-            <span class="playback-state" id="playbackState" hidden>
-              <span class="status-dot" aria-hidden="true"></span>
-              <span id="playbackText"></span>
-            </span>
-          </div>
-          <div id="currentContent" aria-live="polite">
-            <div class="current-skeleton" aria-label="正在读取视频信息">
-              <div class="skeleton skeleton-title"></div>
-              <div class="skeleton skeleton-copy"></div>
-              <div class="skeleton skeleton-button"></div>
+      <nav class="popup-tabs" role="tablist" aria-label="扩展页面">
+        <button
+          class="popup-tab is-active"
+          id="currentTab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="currentPanel"
+          data-tab="current"
+        >
+          当前视频
+        </button>
+        <button
+          class="popup-tab"
+          id="libraryTab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="libraryPanel"
+          data-tab="library"
+          tabindex="-1"
+        >
+          追踪列表
+        </button>
+      </nav>
+
+      <main class="popup-main">
+        <section
+          class="popup-panel"
+          id="currentPanel"
+          role="tabpanel"
+          aria-labelledby="currentTab"
+        >
+          <section class="current-section" aria-labelledby="currentLabel">
+            <div class="section-kicker">
+              <span class="eyebrow" id="currentLabel">当前视频</span>
+              <span class="playback-state" id="playbackState" hidden>
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="playbackText"></span>
+              </span>
             </div>
-          </div>
+            <div id="currentContent" aria-live="polite">
+              <div class="current-skeleton" aria-label="正在读取视频信息">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-copy"></div>
+                <div class="skeleton skeleton-button"></div>
+              </div>
+            </div>
+          </section>
         </section>
 
-        <section class="library-section" aria-labelledby="libraryTitle">
-          <div class="section-heading-row">
-            <div>
-              <span class="eyebrow">观看记录</span>
-              <h2 id="libraryTitle">追踪列表</h2>
+        <section
+          class="popup-panel"
+          id="libraryPanel"
+          role="tabpanel"
+          aria-labelledby="libraryTab"
+          hidden
+        >
+          <section class="library-section" aria-labelledby="libraryTitle">
+            <div class="library-header">
+              <div class="section-heading-row">
+                <div>
+                  <span class="eyebrow">观看记录</span>
+                  <h2 id="libraryTitle">追踪列表</h2>
+                </div>
+                <span class="record-count" id="libraryCount">0 部</span>
+              </div>
+              <label class="library-search" for="librarySearch">
+                <span class="icon" data-icon="search" data-icon-size="16"></span>
+                <input
+                  id="librarySearch"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="搜索剧名或集数"
+                  aria-label="搜索追踪列表"
+                >
+              </label>
             </div>
-            <span class="record-count" id="libraryCount">0 部</span>
-          </div>
-          <div id="libraryContent">
-            <div class="library-skeleton" aria-label="正在读取追踪列表">
-              <div class="skeleton skeleton-row"></div>
-              <div class="skeleton skeleton-row"></div>
+            <div id="libraryContent">
+              <div class="library-skeleton" aria-label="正在读取追踪列表">
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row"></div>
+              </div>
             </div>
-          </div>
+          </section>
         </section>
       </main>
     </div>

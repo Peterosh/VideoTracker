@@ -104,6 +104,8 @@ function createHarness(options) {
   };
   let frameResult = {
     activeEpisodeText: "",
+    adDetected: false,
+    adReason: "",
     currentTime: 300,
     duration: 2700,
     ended: false,
@@ -117,6 +119,7 @@ function createHarness(options) {
     score: 900000,
     url: tab.url,
     videoHeight: 720,
+    videoSource: "https://video.example.com/content/episode.mp4",
     videoWidth: 1280
   };
 
@@ -232,6 +235,8 @@ function createHarness(options) {
 function defaultFrame(position, episode, url) {
   return {
     activeEpisodeText: `第 ${episode} 集`,
+    adDetected: false,
+    adReason: "",
     currentTime: position,
     duration: 2700,
     ended: false,
@@ -245,6 +250,7 @@ function defaultFrame(position, episode, url) {
     score: 900000,
     url,
     videoHeight: 720,
+    videoSource: "https://video.example.com/content/episode.mp4",
     videoWidth: 1280
   };
 }
@@ -294,7 +300,7 @@ test("updates episode and position by re-injecting all frames", async () => {
   );
 
   assert.equal(result.active, true);
-  const record = harness.syncStore[`vt.show.${started.record.id}`];
+  const record = harness.syncStore[`vt.show.${started.session.showId}`];
   assert.equal(record.episodeLabel, "第 4 集");
   assert.equal(record.position, 900);
 });
@@ -314,9 +320,181 @@ test("keeps a manually corrected episode label", async () => {
 
   await harness.send({ tabId: 7, type: "VT_SYNC_TAB" }, {});
 
-  const record = harness.syncStore[`vt.show.${started.record.id}`];
+  const record = harness.syncStore[`vt.show.${started.session.showId}`];
   assert.equal(record.episodeLabel, "第 3 集");
   assert.equal(record.position, 900);
+});
+
+test("pins shows and preserves pin state across progress updates", async () => {
+  const harness = createHarness();
+  const started = await startDefault(harness);
+  const showId = started.record.id;
+  const initialUpdatedAt = harness.syncStore[`vt.show.${showId}`].updatedAt;
+
+  const pinned = await harness.send(
+    {
+      id: showId,
+      pinned: true,
+      type: "VT_SET_SHOW_PINNED"
+    },
+    {}
+  );
+  assert.equal(pinned.ok, true);
+  assert.equal(harness.syncStore[`vt.show.${showId}`].pinned, true);
+  assert.ok(
+    harness.syncStore[`vt.show.${showId}`].updatedAt > initialUpdatedAt
+  );
+
+  harness.advanceTime(16000);
+  harness.setFrameResult(defaultFrame(600, 3, harness.syncStore[`vt.show.${showId}`].url));
+  await harness.send({ tabId: 7, type: "VT_SYNC_TAB" }, {});
+
+  const updated = harness.syncStore[`vt.show.${showId}`];
+  assert.equal(updated.position, 600);
+  assert.equal(updated.pinned, true);
+
+  await harness.send({ tabId: 7, type: "VT_STOP_TRACKING" }, {});
+  harness.advanceTime(1000);
+  harness.setFrameResult(defaultFrame(700, 3, updated.url));
+  await startDefault(harness);
+  assert.equal(harness.syncStore[`vt.show.${showId}`].pinned, true);
+
+  const appState = await harness.send({ tabId: 7, type: "VT_GET_APP_STATE" }, {});
+  assert.equal(appState.records[0].id, showId);
+  assert.equal(appState.records[0].pinned, true);
+  const updatedBeforeUnpin =
+    harness.syncStore[`vt.show.${showId}`].updatedAt;
+
+  const unpinned = await harness.send(
+    {
+      id: showId,
+      pinned: false,
+      type: "VT_SET_SHOW_PINNED"
+    },
+    {}
+  );
+  assert.equal(unpinned.ok, true);
+  assert.equal(harness.syncStore[`vt.show.${showId}`].pinned, false);
+  assert.equal(harness.syncStore[`vt.show.${showId}`].pinnedAt, 0);
+  assert.ok(
+    harness.syncStore[`vt.show.${showId}`].updatedAt > updatedBeforeUnpin
+  );
+});
+
+test("ignores explicit advertisement signals without changing progress", async () => {
+  const harness = createHarness();
+  const started = await startDefault(harness);
+  const showId = started.record.id;
+  const before = clone(harness.syncStore[`vt.show.${showId}`]);
+
+  harness.advanceTime(16000);
+  harness.setFrameResult({
+    ...defaultFrame(20, 3, before.url),
+    adDetected: true,
+    adReason: "overlay",
+    videoSource: "https://video.example.com/ad/clip.mp4"
+  });
+
+  const result = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  const after = harness.syncStore[`vt.show.${showId}`];
+  assert.equal(result.guard, "advertisement");
+  assert.equal(result.written, false);
+  assert.equal(after.position, before.position);
+  assert.equal(after.duration, before.duration);
+});
+
+test("ignores short Tencent ad videos after content starts", async () => {
+  const harness = createHarness();
+  const started = await startDefault(harness);
+  const showId = started.record.id;
+  const before = clone(harness.syncStore[`vt.show.${showId}`]);
+
+  harness.advanceTime(16000);
+  harness.setFrameResult({
+    ...defaultFrame(12, 3, before.url),
+    duration: 30,
+    videoSource: "https://video.example.com/content/episode.mp4"
+  });
+
+  const result = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  const after = harness.syncStore[`vt.show.${showId}`];
+  assert.equal(result.guard, "advertisement");
+  assert.equal(result.reason, "short-duration");
+  assert.equal(after.position, before.position);
+  assert.equal(after.duration, before.duration);
+});
+
+test("waits through a preroll ad before creating the first record", async () => {
+  const harness = createHarness();
+  const url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  harness.setFrameResult({
+    ...defaultFrame(8, 3, url),
+    duration: 30,
+    videoSource: "https://video.example.com/ad/preroll.mp4"
+  });
+
+  const started = await startDefault(harness);
+  assert.equal(started.advertisement, true);
+  assert.equal(started.ok, true);
+  assert.equal(
+    Object.keys(harness.syncStore).some((key) => key.startsWith("vt.show.")),
+    false
+  );
+
+  harness.advanceTime(7000);
+  harness.setFrameResult(defaultFrame(5, 3, url));
+  const result = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  const record = harness.syncStore[`vt.show.${started.session.showId}`];
+  assert.equal(result.written, true);
+  assert.equal(record.position, 5);
+  assert.equal(record.duration, 2700);
+});
+
+test("requires stable duration before accepting a changed source", async () => {
+  const harness = createHarness();
+  const started = await startDefault(harness);
+  const showId = started.record.id;
+  const url = harness.syncStore[`vt.show.${showId}`].url;
+  const changedSource = {
+    ...defaultFrame(400, 3, url),
+    duration: 3600,
+    videoSource: "https://video.example.com/content/episode-hd.mp4"
+  };
+
+  harness.advanceTime(16000);
+  harness.setFrameResult(changedSource);
+  const guarded = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  assert.equal(guarded.guard, "advertisement");
+  assert.equal(guarded.reason, "unstable-source");
+
+  harness.advanceTime(3000);
+  harness.setFrameResult(changedSource);
+  const stillGuarded = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  assert.equal(stillGuarded.reason, "unstable-source");
+
+  harness.advanceTime(4000);
+  harness.setFrameResult(changedSource);
+  const accepted = await harness.send(
+    { tabId: 7, type: "VT_SYNC_TAB" },
+    {}
+  );
+  assert.equal(accepted.written, true);
+  assert.equal(harness.syncStore[`vt.show.${showId}`].duration, 3600);
 });
 
 test("falls back to local storage when browser sync rejects a write", async () => {
