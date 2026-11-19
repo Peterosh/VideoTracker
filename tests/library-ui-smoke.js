@@ -280,7 +280,7 @@ async function main() {
 
     const desktopMetrics = await page.evaluate(() => ({
       episodeRows: document.querySelectorAll(".episode-row").length,
-      remoteSyncLabel: document.getElementById("syncLabel")?.textContent,
+      syncStateLabel: document.getElementById("syncStateText")?.textContent,
       deviceCell: document.querySelector(".episode-device strong")?.textContent,
       publicIpCell: document.querySelector(
         ".episode-device span:last-child"
@@ -292,12 +292,13 @@ async function main() {
     assert.equal(desktopMetrics.showItems, 2);
     assert.equal(desktopMetrics.episodeRows, 2);
     assert.equal(desktopMetrics.title, "沧元图");
-    assert.equal(desktopMetrics.remoteSyncLabel, "本地云端已对齐");
+    assert.equal(desktopMetrics.syncStateLabel, "本地与云端已对齐");
     assert.equal(desktopMetrics.deviceCell, "书房电脑");
     assert.equal(desktopMetrics.publicIpCell, "公网 36.110.12.34");
     assert.equal(desktopMetrics.horizontalOverflow, false);
 
-    await page.click(".device-list-panel > summary");
+    await page.click("#devicesTab");
+    await page.waitForSelector(".device-view:not([hidden])");
     const deviceRows = await page.locator(".device-row").count();
     assert.equal(deviceRows, 2);
     await page.locator("[data-device-name]").first().fill("书房主机");
@@ -306,6 +307,11 @@ async function main() {
       () =>
         document.querySelector("[data-device-name]")?.value === "书房主机"
     );
+    await page.screenshot({
+      fullPage: false,
+      path: path.join(artifactsDirectory, "library-devices.png")
+    });
+    await page.click("#libraryTab");
 
     await page.screenshot({
       fullPage: false,

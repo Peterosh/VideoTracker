@@ -6,8 +6,11 @@ const http = require("node:http");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
-const root = path.resolve(__dirname, "..");
-const artifactsRoot = path.resolve(root, "artifacts");
+const projectRoot = path.resolve(__dirname, "..");
+const extensionRoot = path.resolve(
+  process.env.EXTENSION_ROOT || projectRoot
+);
+const artifactsRoot = path.resolve(projectRoot, "artifacts");
 
 function findBrowserExecutable() {
   const candidates = [
@@ -146,9 +149,9 @@ async function main() {
       executablePath: findBrowserExecutable(),
       headless: true,
       args: [
-        `--disable-extensions-except=${root}`,
+        `--disable-extensions-except=${extensionRoot}`,
         "--disable-features=DisableLoadExtensionCommandLineSwitch",
-        `--load-extension=${root}`
+        `--load-extension=${extensionRoot}`
       ]
     });
 

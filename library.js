@@ -9,13 +9,15 @@
     devices: [],
     episodes: [],
     filter: "all",
+    networkInfoEnabled: false,
     pendingDelete: null,
     query: "",
     selectedShowId: null,
     shows: [],
     syncIssue: null,
     syncState: null,
-    toastTimer: null
+    toastTimer: null,
+    view: "library"
   };
 
   const elements = {
@@ -25,6 +27,12 @@
     detailPanel: document.getElementById("detailPanel"),
     deviceCount: document.getElementById("deviceCount"),
     deviceList: document.getElementById("deviceList"),
+    deviceNetworkState: document.getElementById("deviceNetworkState"),
+    devicesTab: document.getElementById("devicesTab"),
+    devicesView: document.getElementById("devicesView"),
+    languageButtons: Array.from(document.querySelectorAll("[data-language]")),
+    libraryTab: document.getElementById("libraryTab"),
+    libraryView: document.getElementById("libraryView"),
     networkInfoToggle: document.getElementById("networkInfoToggle"),
     deleteDialog: document.getElementById("deleteDialog"),
     deleteError: document.getElementById("deleteError"),
@@ -39,7 +47,6 @@
     showsList: document.getElementById("showsList"),
     syncLastTime: document.getElementById("syncLastTime"),
     syncExtensionId: document.getElementById("syncExtensionId"),
-    syncLabel: document.getElementById("syncLabel"),
     syncNowButton: document.getElementById("syncNowButton"),
     syncResultBadge: document.getElementById("syncResultBadge"),
     syncStateText: document.getElementById("syncStateText"),
@@ -200,11 +207,6 @@
     const cloudEpisodes = Number(syncState.cloudEpisodes) || 0;
     elements.syncState.classList.toggle("is-local", !synced);
     elements.syncState.classList.toggle("is-warning", !synced && !failed);
-    elements.syncLabel.textContent = synced
-      ? I18n.t("本地云端已对齐")
-      : failed
-        ? I18n.t("同步失败")
-        : I18n.t("本地未同步");
     elements.syncStateText.textContent = synced
       ? I18n.t("本地与云端已对齐")
       : failed
@@ -233,6 +235,44 @@
       : failed
         ? syncState.error || I18n.t("浏览器同步存储不可用")
         : I18n.t("有 {pending} 条本地记录尚未上传", { pending });
+  }
+
+  function updateNetworkState() {
+    elements.networkInfoToggle.checked = Boolean(state.networkInfoEnabled);
+    elements.deviceNetworkState.textContent = I18n.t(
+      state.networkInfoEnabled ? "网络信息已开启" : "网络信息已关闭"
+    );
+    elements.deviceNetworkState.classList.toggle(
+      "is-active",
+      Boolean(state.networkInfoEnabled)
+    );
+  }
+
+  function switchView(view, updateHash) {
+    const nextView = view === "devices" ? "devices" : "library";
+    state.view = nextView;
+    elements.libraryView.hidden = nextView !== "library";
+    elements.devicesView.hidden = nextView !== "devices";
+    elements.libraryTab.classList.toggle("is-active", nextView === "library");
+    elements.devicesTab.classList.toggle("is-active", nextView === "devices");
+    elements.libraryTab.setAttribute(
+      "aria-current",
+      nextView === "library" ? "page" : "false"
+    );
+    elements.devicesTab.setAttribute(
+      "aria-current",
+      nextView === "devices" ? "page" : "false"
+    );
+    if (updateHash !== false) {
+      try {
+        history.replaceState(null, "", `#${nextView}`);
+      } catch (_error) {
+        // File previews may not support history updates; keep the view local.
+      }
+    }
+    if (nextView === "devices") {
+      renderDeviceList();
+    }
   }
 
   function renderDeviceList() {
@@ -590,6 +630,7 @@
 
   function render() {
     updateSyncState();
+    updateNetworkState();
     renderDeviceList();
     renderShows();
     renderDetail();
@@ -978,6 +1019,7 @@
           enabled
         );
       state.networkInfoEnabled = enabled;
+      updateNetworkState();
       await sendRuntime({ type: "VT_SYNC_NOW" });
       await loadLibrary();
       showToast(
@@ -989,6 +1031,29 @@
       elements.networkInfoToggle.disabled = false;
     }
   });
+
+  elements.libraryTab.addEventListener("click", () => {
+    switchView("library");
+  });
+  elements.devicesTab.addEventListener("click", () => {
+    switchView("devices");
+  });
+  window.addEventListener("hashchange", () => {
+    switchView(location.hash === "#devices" ? "devices" : "library", false);
+  });
+  for (const button of elements.languageButtons) {
+    button.classList.toggle(
+      "is-active",
+      button.dataset.language === I18n.language
+    );
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.language === I18n.language)
+    );
+    button.addEventListener("click", () => {
+      I18n.setLanguage(button.dataset.language);
+    });
+  }
 
   if (chrome.storage && chrome.storage.onChanged) {
     let refreshTimer = null;
@@ -1014,5 +1079,6 @@
 
   hydrateIcons();
   I18n.localize(document);
+  switchView(location.hash === "#devices" ? "devices" : "library", false);
   void loadLibrary();
 })();

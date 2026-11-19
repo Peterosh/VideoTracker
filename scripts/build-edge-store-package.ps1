@@ -57,7 +57,35 @@ $storeManifest = $manifest | ConvertTo-Json -Depth 10
 Set-Content -LiteralPath (Join-Path $staging "manifest.json") `
   -Value $storeManifest -Encoding utf8
 
-Compress-Archive -Path (Join-Path $staging "*") `
-  -DestinationPath $zipPath -Force
+if (Test-Path -LiteralPath $zipPath) {
+  Remove-Item -LiteralPath $zipPath -Force
+}
+
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::Open(
+  $zipPath,
+  [System.IO.Compression.ZipArchiveMode]::Create
+)
+try {
+  $stagingPrefix = $staging.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar
+  ) + [System.IO.Path]::DirectorySeparatorChar
+  foreach ($file in Get-ChildItem -LiteralPath $staging -Recurse -File) {
+    $entryName = $file.FullName.Substring($stagingPrefix.Length).Replace(
+      [System.IO.Path]::DirectorySeparatorChar,
+      "/"
+    )
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+      $archive,
+      $file.FullName,
+      $entryName,
+      [System.IO.Compression.CompressionLevel]::Optimal
+    ) | Out-Null
+  }
+}
+finally {
+  $archive.Dispose()
+}
 
 Write-Output $zipPath

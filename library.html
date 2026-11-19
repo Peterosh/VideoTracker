@@ -16,15 +16,21 @@
           </span>
           <div>
             <p class="eyebrow">VIDEO TRACKER</p>
-            <h1>观看记录</h1>
+            <h1>剧迹</h1>
           </div>
         </div>
 
         <div class="header-actions">
-          <span class="sync-pill" id="syncState" title="使用当前浏览器账户同步">
-            <span class="sync-dot" aria-hidden="true"></span>
-            <span id="syncLabel">浏览器同步</span>
-          </span>
+          <label class="network-toggle" for="networkInfoToggle">
+            <span class="icon" data-icon="monitor-play" data-icon-size="16"></span>
+            <span class="network-toggle-label">网络信息</span>
+            <input id="networkInfoToggle" type="checkbox">
+            <span class="toggle-control" aria-hidden="true"></span>
+          </label>
+          <div class="language-switch" role="group" aria-label="语言">
+            <button type="button" data-language="zh">中</button>
+            <button type="button" data-language="en">EN</button>
+          </div>
           <button
             class="icon-button"
             id="refreshButton"
@@ -37,93 +43,102 @@
         </div>
       </header>
 
-      <main class="workspace">
-        <aside class="shows-panel" aria-labelledby="showsTitle">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">资料库</p>
-              <h2 id="showsTitle">追踪剧集</h2>
-            </div>
-            <span class="count" id="showCount">0</span>
-          </div>
+      <nav class="view-tabs" aria-label="管理页面">
+        <button class="view-tab is-active" id="libraryTab" type="button" data-view="library">
+          观看记录
+        </button>
+        <button class="view-tab" id="devicesTab" type="button" data-view="devices">
+          <span>设备列表</span>
+          <span class="count" id="deviceCount">1</span>
+        </button>
+      </nav>
 
-          <label class="search-field" for="showSearch">
-            <span class="icon" data-icon="search" data-icon-size="17"></span>
-            <input
-              id="showSearch"
-              type="search"
-              autocomplete="off"
-              placeholder="搜索剧名或集数"
-            >
-          </label>
-
-          <section class="sync-card" aria-labelledby="syncCardTitle">
-            <div class="sync-card-heading">
+      <main>
+        <section class="workspace" id="libraryView">
+          <aside class="shows-panel" aria-labelledby="showsTitle">
+            <div class="panel-heading">
               <div>
-                <p class="eyebrow" id="syncCardTitle">本地与云端</p>
-                <strong id="syncStateText">等待检查</strong>
+                <p class="eyebrow">资料库</p>
+                <h2 id="showsTitle">追踪剧集</h2>
               </div>
-              <span class="sync-result" id="syncResultBadge">未同步</span>
+              <span class="count" id="showCount">0</span>
             </div>
-            <p class="sync-summary" id="syncSummary">尚未执行同步检查。</p>
-            <div class="sync-card-actions">
-              <button class="button button-primary button-compact" id="syncNowButton" type="button">
-                <span class="icon" data-icon="refresh-cw" data-icon-size="16"></span>
-                <span>立即同步</span>
-              </button>
-              <span class="sync-last-time" id="syncLastTime">尚未同步</span>
-            </div>
-            <p class="sync-extension-id">
-              扩展 ID
-              <code id="syncExtensionId"></code>
-            </p>
-          </section>
 
-          <details class="device-list-panel">
-            <summary>
-              <span>设备列表</span>
-              <span class="count" id="deviceCount">1</span>
-            </summary>
-            <label class="network-consent" for="networkInfoToggle">
-              <input id="networkInfoToggle" type="checkbox">
-              <span class="toggle-control" aria-hidden="true"></span>
-              <span>
-                <strong>网络信息</strong>
-                <small>允许获取并同步局域网和公网 IP</small>
-              </span>
+            <label class="search-field" for="showSearch">
+              <span class="icon" data-icon="search" data-icon-size="17"></span>
+              <input
+                id="showSearch"
+                type="search"
+                autocomplete="off"
+                placeholder="搜索剧名或集数"
+              >
             </label>
-            <div class="device-list" id="deviceList">
-              <p class="device-list-empty">正在读取设备...</p>
+
+            <section class="sync-card" id="syncState" aria-labelledby="syncCardTitle">
+              <div class="sync-card-heading">
+                <div>
+                  <p class="eyebrow" id="syncCardTitle">本地与云端</p>
+                  <strong id="syncStateText">等待检查</strong>
+                </div>
+                <span class="sync-result" id="syncResultBadge">未同步</span>
+              </div>
+              <p class="sync-summary" id="syncSummary">尚未执行同步检查。</p>
+              <div class="sync-card-actions">
+                <button class="button button-primary button-compact" id="syncNowButton" type="button">
+                  <span class="icon" data-icon="refresh-cw" data-icon-size="16"></span>
+                  <span>立即同步</span>
+                </button>
+                <span class="sync-last-time" id="syncLastTime">尚未同步</span>
+              </div>
+              <p class="sync-extension-id">
+                扩展 ID
+                <code id="syncExtensionId"></code>
+              </p>
+            </section>
+
+            <div class="shows-list" id="showsList" aria-live="polite">
+              <div class="sidebar-skeleton">
+                <span class="skeleton"></span>
+                <span class="skeleton"></span>
+                <span class="skeleton"></span>
+              </div>
             </div>
-          </details>
 
-          <div class="shows-list" id="showsList" aria-live="polite">
-            <div class="sidebar-skeleton">
-              <span class="skeleton"></span>
-              <span class="skeleton"></span>
-              <span class="skeleton"></span>
+            <div class="backup-actions">
+              <button class="button button-secondary button-compact" id="exportButton" type="button">
+                <span class="icon" data-icon="download" data-icon-size="16"></span>
+                <span>导出备份</span>
+              </button>
+              <button class="button button-secondary button-compact" id="importButton" type="button">
+                <span class="icon" data-icon="upload" data-icon-size="16"></span>
+                <span>导入备份</span>
+              </button>
+              <input id="importFile" type="file" accept="application/json,.json" hidden>
             </div>
-          </div>
+          </aside>
 
-          <div class="backup-actions">
-            <button class="button button-secondary button-compact" id="exportButton" type="button">
-              <span class="icon" data-icon="download" data-icon-size="16"></span>
-              <span>导出备份</span>
-            </button>
-            <button class="button button-secondary button-compact" id="importButton" type="button">
-              <span class="icon" data-icon="upload" data-icon-size="16"></span>
-              <span>导入备份</span>
-            </button>
-            <input id="importFile" type="file" accept="application/json,.json" hidden>
-          </div>
-        </aside>
+          <section class="detail-panel" id="detailPanel" aria-live="polite">
+            <div class="detail-loading">
+              <div class="skeleton skeleton-heading"></div>
+              <div class="skeleton skeleton-stats"></div>
+              <div class="skeleton skeleton-line"></div>
+              <div class="skeleton skeleton-line"></div>
+            </div>
+          </section>
+        </section>
+        </section>
 
-        <section class="detail-panel" id="detailPanel" aria-live="polite">
-          <div class="detail-loading">
-            <div class="skeleton skeleton-heading"></div>
-            <div class="skeleton skeleton-stats"></div>
-            <div class="skeleton skeleton-line"></div>
-            <div class="skeleton skeleton-line"></div>
+        <section class="device-view" id="devicesView" hidden>
+          <div class="device-view-heading">
+            <div>
+              <p class="eyebrow">设备列表</p>
+              <h2>设备管理</h2>
+              <p>管理当前设备和已同步设备的显示名称。</p>
+            </div>
+            <span class="device-network-state" id="deviceNetworkState">网络信息已关闭</span>
+          </div>
+          <div class="device-list device-grid" id="deviceList">
+            <p class="device-list-empty">正在读取设备...</p>
           </div>
         </section>
       </main>

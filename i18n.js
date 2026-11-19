@@ -1,13 +1,27 @@
 (function attachI18n(root) {
   "use strict";
 
+  const LANGUAGE_STORAGE_KEY = "vt.uiLanguage";
+  let storedLanguage = "";
+  try {
+    if (typeof localStorage !== "undefined") {
+      storedLanguage = localStorage.getItem(LANGUAGE_STORAGE_KEY) || "";
+    }
+  } catch (_error) {
+    storedLanguage = "";
+  }
   const uiLanguage =
     (root.chrome &&
       root.chrome.i18n &&
       root.chrome.i18n.getUILanguage &&
       root.chrome.i18n.getUILanguage()) ||
     "zh-CN";
-  const language = /^zh\b/i.test(uiLanguage) ? "zh" : "en";
+  const language =
+    storedLanguage === "zh" || storedLanguage === "en"
+      ? storedLanguage
+      : /^zh\b/i.test(uiLanguage)
+        ? "zh"
+        : "en";
   const locale = language === "zh" ? "zh-CN" : "en-US";
 
   const english = {
@@ -108,6 +122,10 @@
     "尚未同步": "Not synced yet",
     "扩展 ID": "Extension ID",
     "设备列表": "Devices",
+    "设备管理": "Device management",
+    "管理当前设备和已同步设备的显示名称。": "Manage display names for this and synchronized devices.",
+    "管理页面": "Management pages",
+    "语言": "Language",
     "正在读取设备...": "Loading devices...",
     "导出备份": "Export backup",
     "导入备份": "Import backup",
@@ -266,6 +284,18 @@
     return language === "en" ? t(value) : String(value || "");
   }
 
+  function setLanguage(value) {
+    if (value !== "zh" && value !== "en") {
+      return;
+    }
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, value);
+    }
+    if (typeof location !== "undefined") {
+      location.reload();
+    }
+  }
+
   function localize(node) {
     const scope = node || (typeof document !== "undefined" ? document : null);
     if (!scope || typeof document === "undefined") {
@@ -311,6 +341,7 @@
     localize,
     localizeText,
     relativeTime,
+    setLanguage,
     siteLabel,
     t
   });

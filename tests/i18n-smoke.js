@@ -142,17 +142,65 @@ async function main() {
     await page.goto(pathToFileURL(path.join(root, "library.html")).href);
     await page.waitForSelector(".sync-card");
     const library = await page.evaluate(() => ({
+      brand: document.querySelector(".brand-group h1")?.textContent,
       heading: document.getElementById("showsTitle")?.textContent,
+      headerLanguageControls: document.querySelectorAll(
+        ".app-header [data-language]"
+      ).length,
+      headerNetworkControl: Boolean(
+        document.querySelector(".app-header #networkInfoToggle")
+      ),
       lang: document.documentElement.lang,
-      networkLabel: document.querySelector(
-        "label[for='networkInfoToggle'] strong"
-      )?.textContent,
-      syncState: document.getElementById("syncStateText")?.textContent
+      networkLabel: document.querySelector(".network-toggle-label")?.textContent,
+      syncState: document.getElementById("syncStateText")?.textContent,
+      topSyncPill: Boolean(document.querySelector(".app-header .sync-pill"))
     }));
+    assert.equal(library.brand, "VideoTracker");
     assert.equal(library.heading, "Tracked shows");
+    assert.equal(library.headerLanguageControls, 2);
+    assert.equal(library.headerNetworkControl, true);
     assert.equal(library.networkLabel, "Network information");
     assert.equal(library.syncState, "Local and cloud are aligned");
     assert.equal(library.lang, "en-US");
+    assert.equal(library.topSyncPill, false);
+
+    await page.click("#devicesTab");
+    await page.waitForSelector(".device-view:not([hidden])");
+    const devices = await page.evaluate(() => ({
+      heading: document.querySelector(".device-view-heading h2")?.textContent,
+      networkState: document.getElementById("deviceNetworkState")?.textContent,
+      tabSelected:
+        document.getElementById("devicesTab")?.getAttribute("aria-current")
+    }));
+    assert.equal(devices.heading, "Device management");
+    assert.equal(devices.networkState, "Network information disabled");
+    assert.equal(devices.tabSelected, "page");
+
+    await page.setViewportSize({ height: 844, width: 390 });
+    const englishMobile = await page.evaluate(() => ({
+      headerOverflow:
+        document.querySelector(".app-header").scrollWidth >
+        document.querySelector(".app-header").clientWidth,
+      horizontalOverflow:
+        document.documentElement.scrollWidth > window.innerWidth
+    }));
+    assert.equal(englishMobile.headerOverflow, false);
+    assert.equal(englishMobile.horizontalOverflow, false);
+
+    const navigation = page.waitForNavigation({ waitUntil: "load" });
+    await page.click('[data-language="zh"]');
+    await navigation;
+    await page.waitForFunction(() => document.documentElement.lang === "zh-CN");
+    const switchedLanguage = await page.evaluate(() => ({
+      brand: document.querySelector(".brand-group h1")?.textContent,
+      heading: document.getElementById("showsTitle")?.textContent,
+      language: navigator.language,
+      stored: localStorage.getItem("vt.uiLanguage")
+    }));
+    assert.equal(switchedLanguage.brand, "剧迹");
+    assert.equal(switchedLanguage.heading, "追踪剧集");
+    assert.equal(switchedLanguage.stored, "zh");
+    await page.evaluate(() => localStorage.removeItem("vt.uiLanguage"));
 
     for (const locale of ["zh_CN", "en"]) {
       const messages = JSON.parse(
@@ -165,7 +213,13 @@ async function main() {
       assert.ok(messages.extensionDescription?.message);
     }
 
-    console.log(JSON.stringify({ library, popup }, null, 2));
+    console.log(
+      JSON.stringify(
+        { devices, englishMobile, library, popup, switchedLanguage },
+        null,
+        2
+      )
+    );
   } finally {
     if (browser) {
       await browser.close();
