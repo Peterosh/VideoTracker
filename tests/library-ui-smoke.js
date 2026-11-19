@@ -264,7 +264,9 @@ async function main() {
             }
           },
           onChanged: {
-            addListener() {}
+            addListener(listener) {
+              window.__emitStorageChange = listener;
+            }
           }
         },
         tabs: {
@@ -301,8 +303,23 @@ async function main() {
     await page.waitForSelector(".device-view:not([hidden])");
     const deviceRows = await page.locator(".device-row").count();
     assert.equal(deviceRows, 2);
-    await page.locator("[data-device-name]").first().fill("书房主机");
-    await page.locator("[data-device-name]").first().blur();
+    const firstDeviceName = page.locator("[data-device-name]").first();
+    await firstDeviceName.focus();
+    await firstDeviceName.fill("书房主机");
+    await page.evaluate(() => {
+      window.__emitStorageChange(
+        { "vt.episode.refresh": { newValue: { updatedAt: Date.now() } } },
+        "sync"
+      );
+    });
+    await page.waitForTimeout(350);
+    const editingState = await page.evaluate(() => ({
+      focused: document.activeElement?.matches("[data-device-name]"),
+      value: document.activeElement?.value
+    }));
+    assert.equal(editingState.focused, true);
+    assert.equal(editingState.value, "书房主机");
+    await firstDeviceName.press("Enter");
     await page.waitForFunction(
       () =>
         document.querySelector("[data-device-name]")?.value === "书房主机"

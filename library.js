@@ -282,6 +282,9 @@
         ? [{ ...state.device, current: true }]
         : [];
     elements.deviceCount.textContent = String(devices.length);
+    if (elements.deviceList.querySelector("[data-device-name]:focus")) {
+      return;
+    }
     if (!devices.length) {
       elements.deviceList.innerHTML =
         `<p class="device-list-empty">${escapeHtml(
