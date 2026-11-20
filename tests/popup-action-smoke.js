@@ -131,6 +131,60 @@ async function main() {
     const worker =
       context.serviceWorkers()[0] ||
       (await context.waitForEvent("serviceworker", { timeout: 10000 }));
+    const now = Date.now();
+    await worker.evaluate(
+      ({ checkedAt, updatedAt }) =>
+        new Promise((resolve, reject) => {
+          chrome.storage.sync.set(
+            {
+              "vt.latest.show_popup_fixture": {
+                checkedAt,
+                detectedAt: checkedAt,
+                episodeLabel: "第 103 集",
+                episodeNumber: 103,
+                error: "",
+                id: "show_popup_fixture",
+                showId: "show_popup_fixture",
+                source: "latest-range",
+                status: "ok",
+                updatedAt: checkedAt
+              },
+              "vt.show.show_popup_fixture": {
+                duration: 2400,
+                episodeCompleted: false,
+                episodeLabel: "第 101 集",
+                episodeSource: "auto",
+                id: "show_popup_fixture",
+                maxWatchedEpisodeLabel: "第 101 集",
+                maxWatchedEpisodeNumber: 101,
+                name: "沧元图",
+                pageTitle: "沧元图 第101集",
+                pinned: false,
+                pinnedAt: 0,
+                position: 720,
+                progress: 30,
+                seriesKey: "fixture:popup",
+                site: "generic",
+                siteLabel: "网页视频",
+                updatedAt,
+                url: "https://example.com/watch/101",
+                version: 3
+              }
+            },
+            () => {
+              if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+              }
+              resolve();
+            }
+          );
+        }),
+      {
+        checkedAt: now - 60 * 1000,
+        updatedAt: now - 5 * 60 * 1000
+      }
+    );
     const page = context.pages()[0] || (await context.newPage());
     await page.goto("data:text/html,<title>Popup layout check</title>");
     await worker.evaluate(() => chrome.action.openPopup());
@@ -179,9 +233,16 @@ async function main() {
       awaitPromise: true,
       expression: `(async () => {
         document.getElementById("libraryTab").click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const firstRow = document.querySelector(".show-row");
         return JSON.stringify({
           libraryHidden: document.getElementById("libraryPanel").hidden,
+          latestEpisode: firstRow?.querySelector(
+            ".show-meta-secondary"
+          )?.textContent.replace(/\\s+/g, " ").trim(),
+          newEpisodeTag: firstRow?.querySelector(".new-episode-tag")
+            ?.textContent,
+          rowCount: document.querySelectorAll(".show-row").length,
           searchHeight: document.querySelector(".library-search")
             .getBoundingClientRect().height,
           selected: document.getElementById("libraryTab")
@@ -193,7 +254,28 @@ async function main() {
     const tabMetrics = JSON.parse(tabEvaluation.result.value);
     assert.equal(tabMetrics.libraryHidden, false);
     assert.equal(tabMetrics.selected, "true");
+    assert.equal(tabMetrics.rowCount, 1);
+    assert.match(tabMetrics.latestEpisode, /最高 第 101 集/);
+    assert.match(tabMetrics.latestEpisode, /最新 第 103 集/);
+    assert.equal(tabMetrics.newEpisodeTag, "新集");
     assert.ok(tabMetrics.searchHeight >= 40);
+
+    await cdp.send("Runtime.evaluate", {
+      awaitPromise: true,
+      expression: `new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: "VT_GET_LIBRARY_STATE" },
+          () => resolve()
+        );
+      })`
+    });
+    const badgeText = await worker.evaluate(
+      () =>
+        new Promise((resolve) => {
+          chrome.action.getBadgeText({}, resolve);
+        })
+    );
+    assert.equal(badgeText, "NEW");
 
     const screenshot = await cdp.send("Page.captureScreenshot", {
       captureBeyondViewport: false,
@@ -206,7 +288,12 @@ async function main() {
 
     console.log(
       JSON.stringify(
-        { metrics, screenshot: "artifacts/popup-action.png", tabMetrics },
+        {
+          badgeText,
+          metrics,
+          screenshot: "artifacts/popup-action.png",
+          tabMetrics
+        },
         null,
         2
       )

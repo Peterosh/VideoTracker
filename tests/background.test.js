@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const Core = require("../core.js");
+const EpisodeDiscovery = require("../episode-discovery.js");
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -86,6 +87,13 @@ function createHarness(options) {
   const localArea = createStorageArea(localStore, {}, runtime);
   const listeners = {};
   let currentNow = new Date("2026-11-18T12:00:00+08:00").getTime();
+  let nextTabId = 8;
+  const createdTabs = [];
+  const updatedTabs = [];
+  const seekCalls = [];
+  const fetchCalls = [];
+  const badgeUpdates = [];
+  const alarmCreates = [];
   class FakeDate extends Date {
     constructor(...args) {
       super(...(args.length ? args : [currentNow]));
@@ -134,16 +142,63 @@ function createHarness(options) {
   const chrome = {
     action: {
       setBadgeBackgroundColor() {},
-      setBadgeText() {}
+      setBadgeText(details) {
+        badgeUpdates.push(clone(details));
+      }
     },
     alarms: {
-      create() {},
+      create(name, info) {
+        alarmCreates.push(clone({ info, name }));
+      },
       onAlarm: addListener("alarm")
     },
     runtime,
     scripting: {
       executeScript(details, callback) {
         queueMicrotask(() => {
+          if (
+            details.func &&
+            details.func.name === "seekPlaybackInMainWorld"
+          ) {
+            seekCalls.push({
+              args: clone(details.args || []),
+              tabId: details.target && details.target.tabId
+            });
+            if (settings.seekNoResult) {
+              callback([]);
+              return;
+            }
+            const targetPosition = Number(details.args && details.args[0]) || 0;
+            const duration = Number(details.args && details.args[1]) || 2700;
+            const seekResult =
+              Array.isArray(settings.seekResults) &&
+              settings.seekResults.length
+                ? settings.seekResults[
+                    Math.min(
+                      seekCalls.length - 1,
+                      settings.seekResults.length - 1
+                    )
+                  ]
+                : undefined;
+            if (seekResult === null) {
+              callback([]);
+              return;
+            }
+            callback([
+              {
+                frameId: 3,
+                result: clone(
+                  seekResult || {
+                    currentTime: targetPosition,
+                    duration,
+                    found: true,
+                    seeked: true
+                  }
+                )
+              }
+            ]);
+            return;
+          }
           if (settings.scriptError) {
             runtime.lastError = { message: settings.scriptError };
             callback([]);
@@ -165,7 +220,30 @@ function createHarness(options) {
     },
     tabs: {
       get(tabId, callback) {
-        queueMicrotask(() => callback(clone(tab)));
+        queueMicrotask(() => {
+          const match =
+            Number(tabId) === Number(tab.id)
+              ? tab
+              : createdTabs.find((item) => item.id === Number(tabId));
+          callback(clone(match || tab));
+        });
+      },
+      create(properties, callback) {
+        const created = {
+          active: properties.active !== false,
+          audible: false,
+          id: nextTabId,
+          status: "complete",
+          title: "",
+          url: properties.url
+        };
+        nextTabId += 1;
+        createdTabs.push(created);
+        queueMicrotask(() => callback(clone(created)));
+      },
+      update(tabId, properties, callback) {
+        updatedTabs.push({ properties: clone(properties), tabId });
+        queueMicrotask(() => callback({ id: tabId, ...clone(properties) }));
       },
       onActivated: addListener("tabActivated"),
       onRemoved: addListener("tabRemoved"),
@@ -183,6 +261,7 @@ function createHarness(options) {
   runtime.onStartup = addListener("startup");
 
   const context = {
+    AbortController,
     Date: FakeDate,
     Error,
     Map,
@@ -193,12 +272,25 @@ function createHarness(options) {
     URL,
     chrome,
     console,
+    fetch: async (url, options) => {
+      fetchCalls.push({ options, url });
+      if (typeof settings.fetch === "function") {
+        return settings.fetch(url, options);
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => settings.fetchHtml || ""
+      };
+    },
     queueMicrotask,
     self: {},
+    clearTimeout,
     setTimeout
   };
   context.globalThis = context;
   context.self.VideoTrackerCore = Core;
+  context.self.VideoTrackerEpisodeDiscovery = EpisodeDiscovery;
   context.self.VideoTrackerI18n = {
     t: (value) => value
   };
@@ -218,8 +310,26 @@ function createHarness(options) {
     advanceTime(milliseconds) {
       currentNow += milliseconds;
     },
+    get createdTabs() {
+      return createdTabs;
+    },
+    get alarmCreates() {
+      return alarmCreates;
+    },
+    get badgeUpdates() {
+      return badgeUpdates;
+    },
+    get fetchCalls() {
+      return fetchCalls;
+    },
     get localStore() {
       return localStore;
+    },
+    get seekCalls() {
+      return seekCalls;
+    },
+    get updatedTabs() {
+      return updatedTabs;
     },
     send,
     setFrameResult(nextResult) {
@@ -548,6 +658,7 @@ test("marks an episode complete after naturally watching 80 percent", async () =
     },
     {}
   );
+  assert.equal(started.record.maxWatchedEpisodeNumber, 1);
 
   for (let position = 30; position <= 480; position += 30) {
     harness.advanceTime(30000);
@@ -694,6 +805,234 @@ test("does not auto-resume a show after the user explicitly stops", async () => 
   assert.equal(restarted.session.showId, record.id);
 });
 
+test("continues a tracked show from three seconds before the saved position", async () => {
+  const url = "https://v.qq.com/x/cover/abc123/ep4.html";
+  const frame = defaultFrame(600, 4, url);
+  const record = {
+    ...knownRecordForFrame(frame, "庆余年"),
+    position: 600,
+    progress: 22.2
+  };
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const result = await harness.send(
+    { id: record.id, type: "VT_RESUME_SHOW" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resumed, true);
+  assert.equal(result.reusedTab, false);
+  assert.equal(result.requestedPosition, 597);
+  assert.equal(result.currentTime, 597);
+  assert.equal(result.episodeLabel, "第 3 集");
+  assert.equal(harness.createdTabs.length, 1);
+  assert.equal(harness.createdTabs[0].url, url);
+  assert.equal(harness.seekCalls.length, 8);
+  for (const call of harness.seekCalls) {
+    assert.deepEqual(call, {
+      args: [597, 2700],
+      tabId: harness.createdTabs[0].id
+    });
+  }
+});
+
+test("continues an explicitly selected episode record", async () => {
+  const episode3Url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  const episode4Url = "https://v.qq.com/x/cover/abc123/ep4.html";
+  const episode4Frame = defaultFrame(900, 4, episode4Url);
+  const show = {
+    ...knownRecordForFrame(episode4Frame, "庆余年"),
+    episodeLabel: "第 4 集",
+    position: 900
+  };
+  const episode3 = {
+    completed: false,
+    duration: 2700,
+    episodeLabel: "第 3 集",
+    firstSeenAt: 800,
+    id: `${show.id}.episode3`,
+    pageTitle: "庆余年 第3集 - 腾讯视频",
+    position: 450,
+    progress: 16.7,
+    showId: show.id,
+    updatedAt: 900,
+    url: episode3Url,
+    version: 2
+  };
+  const harness = createHarness({
+    syncStore: {
+      [`vt.episode.${episode3.id}`]: episode3,
+      [`vt.show.${show.id}`]: show
+    }
+  });
+  harness.setTab({
+    active: true,
+    audible: false,
+    id: 7,
+    title: "庆余年 第4集 - 腾讯视频",
+    url: episode4Url
+  });
+
+  const result = await harness.send(
+    {
+      episodeId: episode3.id,
+      id: show.id,
+      type: "VT_RESUME_SHOW"
+    },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resumed, true);
+  assert.equal(result.episodeLabel, "第 3 集");
+  assert.equal(result.requestedPosition, 447);
+  assert.equal(result.url, episode3Url);
+  assert.equal(harness.createdTabs.length, 1);
+  assert.equal(harness.createdTabs[0].url, episode3Url);
+});
+
+test("continues the current episode above the completion threshold", async () => {
+  const url =
+    "https://cn.211dm.com/anime/74a17ef5cddaba35b00838e2/play/1/167.html";
+  const frame = {
+    ...defaultFrame(1226.838786, 167, url),
+    duration: 1414.942969,
+    frameTitle: "仙逆 第167集 - Omofun",
+    heading: "仙逆",
+    ogTitle: "仙逆 第167集 - Omofun"
+  };
+  const record = {
+    ...knownRecordForFrame(frame, "仙逆"),
+    duration: 1414.942969,
+    episodeCompleted: false,
+    episodeLabel: "第 167 集",
+    position: 1226.838786,
+    progress: 86.7
+  };
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const result = await harness.send(
+    { id: record.id, type: "VT_RESUME_SHOW" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resumed, true);
+  assert.equal(result.allComplete, true);
+  assert.equal(result.episodeLabel, "第 167 集");
+  assert.equal(result.requestedPosition, 1223.838786);
+  assert.equal(result.currentTime, 1223.838786);
+  assert.equal(harness.seekCalls.length, 8);
+  assert.deepEqual(harness.seekCalls[0].args, [
+    1223.838786,
+    1414.942969
+  ]);
+});
+
+test("does not seek to a saved position near the end of an episode", async () => {
+  const url =
+    "https://cn.211dm.com/anime/74a17ef5cddaba35b00838e2/play/1/167.html";
+  const frame = {
+    ...defaultFrame(1398, 167, url),
+    duration: 1414.942969,
+    frameTitle: "仙逆 第167集 - Omofun",
+    heading: "仙逆",
+    ogTitle: "仙逆 第167集 - Omofun"
+  };
+  const record = {
+    ...knownRecordForFrame(frame, "仙逆"),
+    duration: 1414.942969,
+    episodeCompleted: true,
+    episodeLabel: "第 167 集",
+    position: 1398,
+    progress: 98.8
+  };
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const result = await harness.send(
+    { id: record.id, type: "VT_RESUME_SHOW" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resumed, false);
+  assert.equal(result.requestedPosition, 0);
+  assert.equal(harness.seekCalls.length, 0);
+});
+
+test("reuses an already open watch tab when continuing", async () => {
+  const url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  const frame = defaultFrame(600, 3, url);
+  const record = {
+    ...knownRecordForFrame(frame, "庆余年"),
+    position: 600,
+    progress: 22.2
+  };
+  const harness = createHarness({
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const result = await harness.send(
+    { id: record.id, type: "VT_RESUME_SHOW" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.reusedTab, true);
+  assert.equal(harness.createdTabs.length, 0);
+  assert.deepEqual(harness.updatedTabs, [
+    { properties: { active: true }, tabId: 7 }
+  ]);
+});
+
+test("keeps retrying when a player resets the restored position", async () => {
+  const url = "https://v.qq.com/x/cover/abc123/ep3.html";
+  const frame = defaultFrame(600, 3, url);
+  const record = {
+    ...knownRecordForFrame(frame, "庆余年"),
+    position: 600,
+    progress: 22.2
+  };
+  const harness = createHarness({
+    seekResults: [
+      { currentTime: 597, duration: 2700, found: true, seeked: true },
+      { currentTime: 0, duration: 2700, found: true, seeked: true },
+      { currentTime: 597, duration: 2700, found: true, seeked: true }
+    ],
+    syncStore: {
+      [`vt.show.${record.id}`]: record
+    }
+  });
+
+  const result = await harness.send(
+    { id: record.id, type: "VT_RESUME_SHOW" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resumed, true);
+  assert.equal(result.currentTime, 597);
+  assert.ok(
+    harness.seekCalls.length >= 7,
+    "the reset position should be corrected and revalidated"
+  );
+});
+
 test("returns per-episode history for the management page", async () => {
   const harness = createHarness();
   const started = await startDefault(harness);
@@ -794,7 +1133,202 @@ test("delays switching to a smaller episode until one minute is watched", async 
   await harness.send({ tabId: 7, type: "VT_SYNC_TAB" }, {});
   const record = harness.syncStore[`vt.show.${started.record.id}`];
   assert.equal(record.episodeLabel, "第 100 集");
+  assert.equal(record.maxWatchedEpisodeLabel, "第 101 集");
+  assert.equal(record.maxWatchedEpisodeNumber, 101);
   assert.equal(record.position, 81);
+});
+
+test("checks the saved show page for a newer episode in the background", async () => {
+  const harness = createHarness({
+    fetchHtml: `
+      <html>
+        <body>
+          <a>第 3 集</a>
+          <a>第 8 集</a>
+          <p>更新至第 8 集</p>
+        </body>
+      </html>
+    `
+  });
+  const started = await startDefault(harness);
+
+  const result = await harness.send(
+    { type: "VT_CHECK_LATEST_EPISODES" },
+    {}
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.checked, 1);
+  assert.equal(result.updated, 1);
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(
+    harness.fetchCalls[0].url,
+    harness.syncStore[`vt.show.${started.record.id}`].url
+  );
+
+  const latestKey = `vt.latest.${started.record.id}`;
+  const latest = harness.syncStore[latestKey];
+  assert.equal(latest.episodeLabel, "第 8 集");
+  assert.equal(latest.episodeNumber, 8);
+  assert.equal(latest.status, "ok");
+  assert.equal(
+    harness.badgeUpdates.at(-1).text,
+    "NEW"
+  );
+
+  const library = await harness.send(
+    { type: "VT_GET_LIBRARY_STATE" },
+    {}
+  );
+  assert.equal(library.shows[0].maxWatchedEpisodeNumber, 3);
+  assert.equal(library.shows[0].latestEpisodeNumber, 8);
+  assert.equal(library.shows[0].hasNewEpisode, true);
+});
+
+test("detects an Omofun preview episode above the current latest episode", async () => {
+  const url =
+    "https://cn.211dm.com/anime/01b4f32464ea949eafbcaed8/play/1/103.html";
+  const frame = {
+    ...defaultFrame(600, 103, url),
+    duration: 1431,
+    frameTitle: "沧元图 103集-Omofun动漫",
+    heading: "沧元图",
+    ogTitle: "沧元图 103集-Omofun动漫"
+  };
+  const show = {
+    ...knownRecordForFrame(frame, "沧元图"),
+    episodeLabel: "第 103 集",
+    site: "omofun",
+    siteLabel: "Omofun"
+  };
+  const harness = createHarness({
+    fetchHtml: `
+      <section class="recommendations">
+        <a href="/anime/other.html">
+          <h4>沧元图2024</h4>
+          <span>更新至43集</span>
+        </a>
+      </section>
+      <ul class="play-list">
+        <li>
+          <a href="/anime/01b4f32464ea949eafbcaed8/play/1/103.html"
+             title="103集" data-num="103">103集</a>
+        </li>
+        <li>
+          <a href="/anime/01b4f32464ea949eafbcaed8/play/1/104.html"
+             title="先行104集" data-num="104">先行104集</a>
+        </li>
+      </ul>
+    `,
+    syncStore: {
+      [`vt.latest.${show.id}`]: {
+        checkedAt: Date.now() - 60000,
+        confidence: 100,
+        episodeLabel: "第 103 集",
+        episodeNumber: 103,
+        showId: show.id,
+        status: "ok",
+        updatedAt: Date.now() - 60000,
+        version: 2
+      },
+      [`vt.show.${show.id}`]: show
+    }
+  });
+
+  const result = await harness.send(
+    { type: "VT_CHECK_LATEST_EPISODES" },
+    {}
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.updated, 1);
+  const latest = harness.syncStore[`vt.latest.${show.id}`];
+  assert.equal(latest.episodeNumber, 104);
+  assert.equal(latest.episodeLabel, "第 104 集");
+});
+
+test("migrates the highest watched episode during a background update check", async () => {
+  const now = Date.now();
+  const showId = "show_background_migration";
+  const show = {
+    duration: 2700,
+    episodeCompleted: false,
+    episodeLabel: "第 3 集",
+    episodeSource: "auto",
+    id: showId,
+    name: "庆余年",
+    pageTitle: "庆余年 第3集",
+    pinned: false,
+    pinnedAt: 0,
+    position: 600,
+    seriesKey: "tencent:cover:background-migration",
+    site: "tencent",
+    siteLabel: "腾讯视频",
+    updatedAt: now,
+    url: "https://v.qq.com/x/cover/background-migration/ep3.html",
+    version: 2
+  };
+  const episode = {
+    completed: true,
+    duration: 2700,
+    episodeLabel: "第 101 集",
+    firstSeenAt: now - 86400000,
+    id: `${showId}.ep101`,
+    pageTitle: "庆余年 第101集",
+    position: 2600,
+    progress: 96,
+    showId,
+    updatedAt: now - 86400000,
+    url: "https://v.qq.com/x/cover/background-migration/ep101.html",
+    version: 2
+  };
+  const harness = createHarness({
+    fetchHtml: "<p>更新至第 103 集</p>",
+    syncStore: {
+      [`vt.episode.${episode.id}`]: episode,
+      [`vt.show.${showId}`]: show
+    }
+  });
+
+  const result = await harness.send(
+    { type: "VT_CHECK_LATEST_EPISODES" },
+    {}
+  );
+  assert.equal(result.checked, 1);
+  assert.equal(result.updated, 1);
+  assert.equal(harness.createdTabs.length, 0);
+  assert.equal(
+    harness.syncStore[`vt.show.${showId}`].maxWatchedEpisodeNumber,
+    101
+  );
+  assert.equal(
+    harness.syncStore[`vt.show.${showId}`].maxWatchedEpisodeLabel,
+    "第 101 集"
+  );
+  assert.equal(
+    harness.syncStore[`vt.latest.${showId}`].episodeNumber,
+    103
+  );
+  assert.equal(harness.badgeUpdates.at(-1).text, "NEW");
+});
+
+test("does not lower a previously detected latest episode", async () => {
+  let html = "<p>更新至第 12 集</p>";
+  const harness = createHarness({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => html
+    })
+  });
+  const started = await startDefault(harness);
+
+  await harness.send({ type: "VT_CHECK_LATEST_EPISODES" }, {});
+  html = "<p>当前播放第 5 集</p>";
+  await harness.send({ type: "VT_CHECK_LATEST_EPISODES" }, {});
+
+  const latest = harness.syncStore[`vt.latest.${started.record.id}`];
+  assert.equal(latest.episodeNumber, 12);
+  assert.equal(latest.episodeLabel, "第 12 集");
 });
 
 test("stores the watching device name and local IP on each episode", async () => {

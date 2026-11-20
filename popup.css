@@ -748,7 +748,7 @@ main {
   grid-template-columns: 38px minmax(0, 1fr) 40px 40px 40px;
   align-items: center;
   gap: 4px;
-  min-height: 76px;
+  min-height: 86px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -817,7 +817,7 @@ main {
 .show-main {
   display: grid;
   min-width: 0;
-  min-height: 64px;
+  min-height: 74px;
   align-content: center;
   gap: 4px;
   padding: 8px 6px;
@@ -876,6 +876,37 @@ main {
   overflow: hidden;
   color: var(--text-soft);
   text-overflow: ellipsis;
+}
+
+.show-meta-secondary {
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--muted);
+  overflow: visible;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.show-meta-secondary .show-meta-item {
+  flex: 0 0 auto;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.new-episode-tag {
+  display: inline-flex;
+  min-height: 18px;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid rgba(244, 184, 96, 0.34);
+  border-radius: 999px;
+  background: rgba(244, 184, 96, 0.12);
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1;
 }
 
 .meta-separator {

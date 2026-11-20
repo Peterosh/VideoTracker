@@ -65,6 +65,54 @@ async function main() {
 
     const extensionPage = await context.newPage();
     await extensionPage.goto(`chrome-extension://${extensionId}/popup.html`);
+    let resumeResult = null;
+    if (process.env.TEST_RESUME === "1") {
+      const showId = "show_live_resume";
+      const now = Date.now();
+      const record = {
+        duration: 1431,
+        episodeCompleted: false,
+        episodeLabel: "第 101 集",
+        episodeSource: "auto",
+        id: showId,
+        name: "沧元图",
+        pageTitle: "沧元图 101集-Omofun动漫",
+        pinned: false,
+        pinnedAt: 0,
+        position: 600,
+        progress: 42,
+        seriesKey: "omofun:anime:01b4f32464ea949eafbcaed8",
+        site: "omofun",
+        siteLabel: "Omofun",
+        updatedAt: now,
+        url: page.url(),
+        version: 3
+      };
+      await worker.evaluate(
+        (payload) =>
+          new Promise((resolve) => {
+            chrome.storage.sync.set(
+              { [`vt.show.${payload.id}`]: payload },
+              resolve
+            );
+          }),
+        record
+      );
+      resumeResult = await extensionPage.evaluate(
+        (id) =>
+          new Promise((resolve) => {
+            chrome.runtime.sendMessage(
+              { id, type: "VT_RESUME_SHOW" },
+              resolve
+            );
+          }),
+        showId
+      );
+      await page.screenshot({
+        fullPage: false,
+        path: path.join(artifactsRoot, "resume-live-current.png")
+      });
+    }
     const tabs = await worker.evaluate(
       () =>
         new Promise((resolve) => {
@@ -119,6 +167,7 @@ async function main() {
       JSON.stringify(
         {
           frames,
+          resumeResult,
           snapshot,
           startResult,
           title: await page.title(),

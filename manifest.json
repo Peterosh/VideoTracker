@@ -4,7 +4,7 @@
   "name": "__MSG_extensionName__",
   "short_name": "__MSG_extensionShortName__",
   "default_locale": "zh_CN",
-  "version": "0.10.7",
+  "version": "0.10.9",
   "description": "__MSG_extensionDescription__",
   "permissions": [
     "activeTab",

@@ -22,7 +22,15 @@ function fixture() {
       deviceName: "书房电脑",
       devicePlatform: "Windows",
       devicePublicIp: "36.110.12.34",
+      hasNewEpisode: true,
       id: "show_omofun",
+      latestCheckedAt: now - 2 * 60 * 1000,
+      latestCheckError: "",
+      latestEpisodeLabel: "第 103 集",
+      latestEpisodeNumber: 103,
+      latestEpisodeStatus: "ok",
+      maxWatchedEpisodeLabel: "第 101 集",
+      maxWatchedEpisodeNumber: 101,
       name: "沧元图",
       pageTitle: "沧元图 101集-Omofun动漫",
       position: 780,
@@ -38,7 +46,15 @@ function fixture() {
       duration: 2700,
       episodeCompleted: false,
       episodeLabel: "第 12 集",
+      hasNewEpisode: false,
       id: "show_tencent",
+      latestCheckedAt: now - 60 * 60 * 1000,
+      latestCheckError: "",
+      latestEpisodeLabel: "第 12 集",
+      latestEpisodeNumber: 12,
+      latestEpisodeStatus: "ok",
+      maxWatchedEpisodeLabel: "第 12 集",
+      maxWatchedEpisodeNumber: 12,
       name: "庆余年",
       pageTitle: "庆余年 第12集 - 腾讯视频",
       position: 1274,
@@ -181,6 +197,8 @@ async function main() {
     const page = await context.newPage();
     await page.addInitScript((libraryState) => {
       let currentState = JSON.parse(JSON.stringify(libraryState));
+      window.__openedUrls = [];
+      window.__resumeMessages = [];
       const localStore = {
         "vt.deviceProfile.v1": libraryState.device
       };
@@ -209,6 +227,30 @@ async function main() {
                   );
                 }
                 callback({ ok: true, showDeleted: !remaining });
+                return;
+              }
+              if (message.type === "VT_RESUME_SHOW") {
+                window.__resumeMessages.push(message);
+                const requestedEpisode = message.episodeId
+                  ? currentState.episodes.find(
+                      (episode) => episode.id === message.episodeId
+                    )
+                  : null;
+                callback({
+                  allComplete: false,
+                  currentTime: 777,
+                  episodeLabel:
+                    requestedEpisode?.episodeLabel || "第 101 集",
+                  ok: true,
+                  requestedPosition: 777,
+                  resumed: true,
+                  tabId: 1,
+                  url:
+                    requestedEpisode?.url ||
+                    currentState.shows.find(
+                      (show) => show.id === message.id
+                    )?.url
+                });
                 return;
               }
               if (message.type === "VT_DELETE_SHOW") {
@@ -299,8 +341,15 @@ async function main() {
           }
         },
         tabs: {
-          create(_options, callback) {
-            callback({ id: 1 });
+          create(options, callback) {
+            window.__openedUrls.push(options.url);
+            callback({ id: window.__openedUrls.length + 10 });
+          },
+          query(_queryInfo, callback) {
+            callback([]);
+          },
+          update(tabId, _properties, callback) {
+            callback({ id: tabId });
           }
         }
       };
@@ -316,8 +365,21 @@ async function main() {
       publicIpCell: document.querySelector(
         ".episode-device span:last-child"
       )?.textContent,
+      highestEpisode: document.querySelector(
+        '[data-stat="max-watched"] .stat-value'
+      )?.textContent,
+      latestEpisode: document.querySelector(
+        '[data-stat="latest-episode"] .stat-value'
+      )?.textContent,
+      latestCheck: document.querySelector(
+        ".latest-check > span:not(.icon)"
+      )?.textContent,
+      newEpisodeTags: document.querySelectorAll(".new-episode-tag").length,
       horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
       showItems: document.querySelectorAll(".show-item").length,
+      showEpisodeSummary: document.querySelector(
+        ".show-item.is-active .show-meta-secondary"
+      )?.textContent.replace(/\s+/g, " ").trim(),
       title: document.querySelector(".detail-title-copy h2")?.textContent
     }));
     assert.equal(desktopMetrics.showItems, 2);
@@ -326,7 +388,41 @@ async function main() {
     assert.equal(desktopMetrics.syncStateLabel, "本地与云端已对齐");
     assert.equal(desktopMetrics.deviceCell, "书房电脑");
     assert.equal(desktopMetrics.publicIpCell, "公网 36.110.12.34");
+    assert.equal(desktopMetrics.highestEpisode, "第 101 集");
+    assert.equal(desktopMetrics.latestEpisode, "第 103 集");
+    assert.match(desktopMetrics.latestCheck, /最近检查/);
+    assert.equal(desktopMetrics.newEpisodeTags, 1);
+    assert.match(desktopMetrics.showEpisodeSummary, /最高 第 101 集/);
+    assert.match(desktopMetrics.showEpisodeSummary, /最新 第 103 集/);
     assert.equal(desktopMetrics.horizontalOverflow, false);
+
+    await page.click("[data-resume-show-id]");
+    await page.waitForFunction(() =>
+      document.getElementById("toast")?.textContent.includes("继续播放")
+    );
+    const resumeState = await page.evaluate(() => ({
+      buttonDisabled: document.querySelector("[data-resume-show-id]")?.disabled,
+      messages: window.__resumeMessages,
+      toast: document.getElementById("toast")?.textContent
+    }));
+    assert.deepEqual(resumeState.messages, [
+      { id: "show_omofun", type: "VT_RESUME_SHOW" }
+    ]);
+    assert.equal(resumeState.buttonDisabled, false);
+    assert.match(resumeState.toast, /已从 12:57 继续播放第 101 集/);
+
+    await page.click("[data-open-url]");
+    await page.waitForFunction(() => window.__resumeMessages.length === 2);
+    const episodeOpenState = await page.evaluate(() => ({
+      messages: window.__resumeMessages,
+      openedUrls: window.__openedUrls
+    }));
+    assert.deepEqual(episodeOpenState.messages[1], {
+      episodeId: "show_omofun.ep101",
+      id: "show_omofun",
+      type: "VT_RESUME_SHOW"
+    });
+    assert.deepEqual(episodeOpenState.openedUrls, []);
 
     await page.click("#languageButton");
     await page.waitForSelector("#languageOptions:not([hidden])");

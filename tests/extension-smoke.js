@@ -39,6 +39,7 @@ function createFixtureServer() {
   </head>
   <body>
     <iframe src="/player" title="Episode player"></iframe>
+    <p id="series-update">更新至第 13 集</p>
   </body>
 </html>`;
   const playerHtml = `<!doctype html>
@@ -48,7 +49,7 @@ function createFixtureServer() {
     <title>庆余年 第12集 - Player</title>
     <style>
       body { margin: 0; background: #000; }
-      video { display: block; width: 960px; height: 540px; background: #000; }
+      #fixture-player { display: block; width: 960px; height: 540px; }
       .player-shell { position: relative; width: 960px; height: 540px; }
       .txp_ad {
         position: absolute;
@@ -63,29 +64,84 @@ function createFixtureServer() {
   </head>
   <body>
     <div class="player-shell">
-      <video id="fixture-video" src="/episode.webm" controls muted preload="auto"></video>
+      <div id="fixture-player"></div>
       <div id="fixture-ad" class="txp_ad" hidden>广告 10 秒</div>
     </div>
     <script>
-      const video = document.getElementById("fixture-video");
       const ad = document.getElementById("fixture-ad");
-      window.__fixturePlayback = {
-        hideAd() {
-          ad.hidden = true;
-        },
-        async seek(value) {
-          await new Promise((resolve) => {
-            video.addEventListener("seeked", resolve, { once: true });
-            video.currentTime = value;
-          });
-        },
-        pause() {
-          video.pause();
-        },
-        showAd() {
-          ad.hidden = false;
-        }
-      };
+      const delayPlayer =
+        localStorage.getItem("vt-fixture-delay-player-once") === "1";
+      localStorage.removeItem("vt-fixture-delay-player-once");
+
+      function createPlayer() {
+        const host = document.getElementById("fixture-player");
+        const shadow = host.attachShadow({ mode: "open" });
+        shadow.innerHTML =
+          '<style>video { display: block; width: 960px; height: 540px; ' +
+          'background: #000; }</style>' +
+          '<video id="fixture-video" src="/episode.webm" ' +
+          'controls muted preload="auto"></video>';
+        const video = shadow.querySelector("video");
+        let resetArmed =
+          localStorage.getItem("vt-fixture-reset-once") === "1";
+        const resetDelay = Math.max(
+          0,
+          Number(localStorage.getItem("vt-fixture-reset-delay-ms")) || 650
+        );
+        let resetCount = 0;
+        localStorage.removeItem("vt-fixture-reset-once");
+        localStorage.removeItem("vt-fixture-reset-delay-ms");
+
+        video.addEventListener("seeked", () => {
+          if (!resetArmed || video.currentTime < 0.5) {
+            return;
+          }
+          resetArmed = false;
+          setTimeout(() => {
+            resetCount += 1;
+            video.pause();
+            video.currentTime = 0;
+          }, resetDelay);
+        });
+
+        window.__fixturePlayback = {
+          getVideo() {
+            return shadow.querySelector("video");
+          },
+          getResetCount() {
+            return resetCount;
+          },
+          hideAd() {
+            ad.hidden = true;
+          },
+          async seek(value) {
+            const currentVideo = this.getVideo();
+            await new Promise((resolve) => {
+              currentVideo.addEventListener("seeked", resolve, { once: true });
+              currentVideo.currentTime = value;
+            });
+          },
+          pause() {
+            this.getVideo().pause();
+          },
+          replaceVideo() {
+            const currentVideo = this.getVideo();
+            const replacement = currentVideo.cloneNode(false);
+            currentVideo.replaceWith(replacement);
+            replacement.load();
+            return true;
+          },
+          showAd() {
+            ad.hidden = false;
+          }
+        };
+      }
+
+      if (delayPlayer) {
+        setTimeout(createPlayer, 8000);
+      } else {
+        createPlayer();
+      }
     </script>
   </body>
 </html>`;
@@ -189,7 +245,7 @@ async function main() {
       .find((frame) => frame.url().endsWith("/player"));
     assert.ok(playerFrame, "fixture player iframe should exist");
     await playerFrame.waitForFunction(
-      () => document.querySelector("video")?.duration > 0
+      () => window.__fixturePlayback?.getVideo()?.duration > 0
     );
     await playerFrame.evaluate(() => window.__fixturePlayback.seek(3));
     await watchPage.waitForTimeout(900);
@@ -245,14 +301,106 @@ async function main() {
     assert.equal(stored[recordKey].position, 4.5);
     assert.equal(stored[recordKey].episodeLabel, "第 12 集");
 
-    const resumedPage = await context.newPage();
-    await resumedPage.goto(fixture.url, { waitUntil: "load" });
+    const latestCheck = await sendRuntime(extensionPage, {
+      type: "VT_CHECK_LATEST_EPISODES"
+    });
+    assert.equal(latestCheck.ok, true);
+    assert.equal(latestCheck.updated, 1);
+    const latestStored = await worker.evaluate(
+      () =>
+        new Promise((resolve) => {
+          chrome.storage.sync.get(null, resolve);
+        })
+    );
+    const latestKey = Object.keys(latestStored).find((key) =>
+      key.startsWith("vt.latest.")
+    );
+    assert.ok(latestKey, "latest episode state should be stored");
+    assert.equal(latestStored[latestKey].episodeNumber, 13);
+
+    await playerFrame.evaluate(() => window.__fixturePlayback.showAd());
+    const adSnapshot = await sendRuntime(extensionPage, {
+      tabId: watchTab.id,
+      type: "VT_GET_SNAPSHOT"
+    });
+    assert.equal(adSnapshot.adDetected, true);
+    assert.equal(adSnapshot.adReason, "overlay");
+    const adSync = await sendRuntime(extensionPage, {
+      tabId: watchTab.id,
+      type: "VT_SYNC_TAB"
+    });
+    assert.equal(adSync.guard, "advertisement");
+    assert.equal(adSync.written, false);
+    await playerFrame.evaluate(() => window.__fixturePlayback.hideAd());
+
+    await playerFrame.evaluate(() => {
+      localStorage.setItem("vt-fixture-delay-player-once", "1");
+      localStorage.setItem("vt-fixture-reset-once", "1");
+      localStorage.setItem("vt-fixture-reset-delay-ms", "5200");
+    });
+    await watchPage.close();
+    const resumedPagePromise = context.waitForEvent("page", {
+      timeout: 15000
+    });
+    const resumeResultPromise = sendRuntime(extensionPage, {
+      id: stored[recordKey].id,
+      type: "VT_RESUME_SHOW"
+    });
+    const resumedPage = await resumedPagePromise;
+    const resumeResult = await resumeResultPromise;
+    assert.equal(resumeResult.ok, true);
+    assert.equal(resumeResult.resumed, true);
+    assert.equal(Math.round(resumeResult.requestedPosition), 2);
     const resumedPlayer = resumedPage
       .frames()
       .find((frame) => frame.url().endsWith("/player"));
     assert.ok(resumedPlayer, "resumed fixture player should exist");
     await resumedPlayer.waitForFunction(
-      () => document.querySelector("video")?.duration > 0
+      () => window.__fixturePlayback?.getVideo()?.duration > 0,
+      null,
+      { timeout: 15000 }
+    );
+    await resumedPlayer.waitForFunction(
+      () => window.__fixturePlayback?.getResetCount() >= 1,
+      null,
+      { timeout: 15000 }
+    );
+    await resumedPlayer.waitForFunction(
+      (targetPosition) => {
+        const currentTime = window.__fixturePlayback?.getVideo()?.currentTime;
+        return Number.isFinite(currentTime) && currentTime >= targetPosition - 0.5;
+      },
+      resumeResult.requestedPosition,
+      { timeout: 10000 }
+    );
+    const resumedPosition = await resumedPlayer.evaluate(
+      () => window.__fixturePlayback.getVideo().currentTime
+    );
+    const resetCount = await resumedPlayer.evaluate(
+      () => window.__fixturePlayback.getResetCount()
+    );
+    assert.ok(
+      resumedPosition >= resumeResult.requestedPosition - 0.5 &&
+        resumedPosition < 10,
+      "late player resets should be restored near the saved position"
+    );
+    assert.ok(resetCount >= 1, "fixture should reset playback once");
+
+    await resumedPlayer.evaluate(() => window.__fixturePlayback.replaceVideo());
+    await resumedPlayer.waitForFunction(
+      (targetPosition) => {
+        const currentTime = window.__fixturePlayback?.getVideo()?.currentTime;
+        return Number.isFinite(currentTime) && currentTime >= targetPosition - 0.5;
+      },
+      resumeResult.requestedPosition,
+      { timeout: 10000 }
+    );
+    const replacedPosition = await resumedPlayer.evaluate(
+      () => window.__fixturePlayback.getVideo().currentTime
+    );
+    assert.ok(
+      replacedPosition >= resumeResult.requestedPosition - 0.5,
+      "a replacement video element should also be restored"
     );
 
     const resumedTabs = await worker.evaluate(
@@ -265,7 +413,7 @@ async function main() {
     );
     const resumedTab = resumedTabs.find(
       (tab) =>
-        tab.id !== watchTab.id &&
+        tab.id === resumeResult.tabId &&
         tab.url &&
         tab.url.startsWith(fixture.url)
     );
@@ -291,30 +439,89 @@ async function main() {
     assert.equal(resumedSession?.showId, stored[recordKey].id);
     await resumedPage.close();
 
-    await playerFrame.evaluate(() => window.__fixturePlayback.showAd());
-    const adSnapshot = await sendRuntime(extensionPage, {
-      tabId: watchTab.id,
-      type: "VT_GET_SNAPSHOT"
-    });
-    assert.equal(adSnapshot.adDetected, true);
-    assert.equal(adSnapshot.adReason, "overlay");
-    const adSync = await sendRuntime(extensionPage, {
-      tabId: watchTab.id,
-      type: "VT_SYNC_TAB"
-    });
-    assert.equal(adSync.guard, "advertisement");
-    assert.equal(adSync.written, false);
-    await playerFrame.evaluate(() => window.__fixturePlayback.hideAd());
-
     const libraryPage = await context.newPage();
     await libraryPage.goto(`chrome-extension://${extensionId}/library.html`);
     await libraryPage.waitForSelector(".episode-row");
     const libraryState = await libraryPage.evaluate(() => ({
       episodeLabel: document.querySelector(".episode-identity h4")?.textContent,
+      highestEpisode: document.querySelector(
+        '[data-stat="max-watched"] .stat-value'
+      )?.textContent,
+      latestEpisode: document.querySelector(
+        '[data-stat="latest-episode"] .stat-value'
+      )?.textContent,
+      newEpisodeTags: document.querySelectorAll(".new-episode-tag").length,
       showName: document.querySelector(".detail-title-copy h2")?.textContent
     }));
     assert.equal(libraryState.showName, "庆余年");
     assert.equal(libraryState.episodeLabel, "第 12 集");
+    assert.equal(libraryState.highestEpisode, "第 12 集");
+    assert.equal(libraryState.latestEpisode, "第 13 集");
+    assert.equal(libraryState.newEpisodeTags, 1);
+
+    const libraryResumePagePromise = context.waitForEvent("page", {
+      timeout: 15000
+    });
+    await libraryPage.click("[data-resume-show-id]");
+    const libraryResumePage = await libraryResumePagePromise;
+    await libraryResumePage.waitForLoadState("load");
+    const libraryResumePlayer = libraryResumePage
+      .frames()
+      .find((frame) => frame.url().endsWith("/player"));
+    assert.ok(
+      libraryResumePlayer,
+      "library resume should open the fixture player once"
+    );
+    const resumedFromLibrary = await libraryResumePlayer.waitForFunction(
+      () => {
+        const time = window.__fixturePlayback?.getVideo()?.currentTime;
+        return Number.isFinite(time) && time >= 1 && time < 3
+          ? time
+          : false;
+      },
+      null,
+      { timeout: 15000 }
+    );
+    assert.ok(Number(await resumedFromLibrary.jsonValue()) >= 1);
+    await libraryPage.waitForFunction(() =>
+      document.getElementById("toast")?.textContent.includes("继续播放")
+    );
+
+    await libraryResumePage.close();
+    await libraryPage.bringToFront();
+    const episodeOpenPagePromise = context.waitForEvent("page", {
+      timeout: 15000
+    });
+    await libraryPage.click("[data-open-url]");
+    const episodeOpenPage = await episodeOpenPagePromise;
+    await episodeOpenPage.waitForLoadState("load");
+    let episodeOpenPlayer = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      episodeOpenPlayer = episodeOpenPage
+        .frames()
+        .find((frame) => frame.url().endsWith("/player"));
+      if (episodeOpenPlayer) {
+        break;
+      }
+      await episodeOpenPage.waitForTimeout(250);
+    }
+    assert.ok(
+      episodeOpenPlayer,
+      "episode open action should launch the fixture player"
+    );
+    const episodeOpenPosition = await episodeOpenPlayer.waitForFunction(
+      () => {
+        const time = window.__fixturePlayback?.getVideo()?.currentTime;
+        return Number.isFinite(time) && time >= 1 && time < 3
+          ? time
+          : false;
+      },
+      null,
+      { timeout: 15000 }
+    );
+    assert.ok(Number(await episodeOpenPosition.jsonValue()) >= 1);
+    await episodeOpenPage.close();
+    await libraryPage.bringToFront();
 
     const pinSelector = `[data-pin-show-id="${stored[recordKey].id}"]`;
     await libraryPage.click(pinSelector);
@@ -357,6 +564,7 @@ async function main() {
       JSON.stringify(
         {
           extensionId,
+          latestCheck,
           libraryState,
           pinState: {
             pinned: pinnedRecord.pinned,
@@ -364,7 +572,9 @@ async function main() {
           },
           resumedSession: {
             autoResumed: resumedSession.autoResumed,
-            showId: resumedSession.showId
+            resetCount,
+            showId: resumedSession.showId,
+            resumedPosition
           },
           record: stored[recordKey],
           snapshot

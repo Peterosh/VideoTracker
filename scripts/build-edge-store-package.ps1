@@ -1,5 +1,6 @@
 param(
-  [string]$OutputDirectory = "dist"
+  [string]$OutputDirectory = "dist",
+  [switch]$Development
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,8 +9,14 @@ $manifestPath = Join-Path $root "manifest.json"
 $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
 $version = $manifest.version
 $outputRoot = Join-Path $root $OutputDirectory
-$staging = Join-Path $outputRoot "edge-store-$version"
-$zipPath = Join-Path $outputRoot "video-tracker-$version-edge-store.zip"
+$packageType = if ($Development) { "development" } else { "edge-store" }
+$staging = Join-Path $outputRoot "$packageType-$version"
+$zipName = if ($Development) {
+  "video-tracker-$version-development.zip"
+} else {
+  "video-tracker-$version-edge-store.zip"
+}
+$zipPath = Join-Path $outputRoot $zipName
 
 New-Item -ItemType Directory -Force $outputRoot | Out-Null
 if (Test-Path -LiteralPath $staging) {
@@ -30,6 +37,7 @@ $files = @(
   "background.js",
   "core.js",
   "device-profile.js",
+  "episode-discovery.js",
   "i18n.js",
   "icons.js",
   "library.css",
@@ -42,6 +50,10 @@ $files = @(
   "THIRD_PARTY_NOTICES.md"
 )
 
+if ($Development) {
+  $files += @("PRIVACY.md", "README.en.md", "README.md")
+}
+
 foreach ($file in $files) {
   Copy-Item -LiteralPath (Join-Path $root $file) -Destination $staging
 }
@@ -52,7 +64,10 @@ foreach ($directory in @("assets", "_locales")) {
 }
 
 # Store packages use the extension ID assigned by Partner Center.
-$manifest.PSObject.Properties.Remove("key")
+# Development packages keep the fixed key so unpacked installs retain their ID.
+if (-not $Development) {
+  $manifest.PSObject.Properties.Remove("key")
+}
 $storeManifest = $manifest | ConvertTo-Json -Depth 10
 Set-Content -LiteralPath (Join-Path $staging "manifest.json") `
   -Value $storeManifest -Encoding utf8

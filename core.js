@@ -68,6 +68,11 @@
       return `第 ${chineseEpisode[1]} ${chineseEpisode[2]}`;
     }
 
+    const previewEpisode = text.match(/先行\s*(\d{1,4})\s*[集话話]/);
+    if (previewEpisode) {
+      return `第 ${previewEpisode[1]} 集`;
+    }
+
     const prefixedEpisode = text.match(/\b(?:Episode|EP?)\s*[.\-:：]?\s*(\d{1,4})\b/i);
     if (prefixedEpisode) {
       return `EP ${prefixedEpisode[1]}`;
@@ -158,6 +163,11 @@
       return chineseNumberToInteger(chineseEpisode[1]);
     }
 
+    const previewEpisode = text.match(/先行\s*(\d{1,4})\s*[集话話]/);
+    if (previewEpisode) {
+      return Number(previewEpisode[1]);
+    }
+
     const prefixedEpisode = text.match(/\b(?:Episode|EP?)\s*[.\-:：]?\s*(\d{1,4})\b/i);
     if (prefixedEpisode) {
       return Number(prefixedEpisode[1]);
@@ -176,6 +186,7 @@
       .replace(/\bS\d{1,2}\s*E\d{1,4}\b.*$/i, "")
       .replace(/\b(?:Episode|EP?)\s*[.\-:：]?\s*\d{1,4}\b.*$/i, "")
       .replace(/第\s*[0-9零〇一二两三四五六七八九十百千万]+\s*[集话話期回].*$/g, "")
+      .replace(/先行\s*\d{1,4}\s*[集话話].*$/g, "")
       .replace(/[\s\-_|｜·:：]*\d{1,4}\s*[集话話期回](?:.*)$/g, "")
       .replace(/\s*[-_|｜]\s*(?:在线观看|高清完整版|免费观看|立即观看).*$/i, "")
       .replace(/\s+/g, " ")

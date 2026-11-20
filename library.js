@@ -6,6 +6,7 @@
   const iconPaths = globalThis.VideoTrackerIconPaths || {};
   const languageLabels = { en: "English", zh: "中文" };
   const state = {
+    actionPointerGuard: null,
     device: null,
     devices: [],
     episodes: [],
@@ -17,6 +18,7 @@
     pinPointerActive: false,
     pinRenderPending: false,
     query: "",
+    resumePendingShowId: null,
     selectedShowId: null,
     shows: [],
     syncIssue: null,
@@ -111,6 +113,113 @@
     });
   }
 
+  function queryTabs(queryInfo) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.tabs || typeof chrome.tabs.query !== "function") {
+        resolve([]);
+        return;
+      }
+      chrome.tabs.query(queryInfo, (tabs) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(Array.isArray(tabs) ? tabs : []);
+      });
+    });
+  }
+
+  function createTab(properties) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.create(properties, (tab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!tab || !tab.id) {
+          reject(new Error(I18n.t("无法打开观看页面")));
+          return;
+        }
+        resolve(tab);
+      });
+    });
+  }
+
+  function updateTab(tabId, properties) {
+    return new Promise((resolve, reject) => {
+      if (!chrome.tabs || typeof chrome.tabs.update !== "function") {
+        reject(new Error(I18n.t("无法打开观看页面")));
+        return;
+      }
+      chrome.tabs.update(tabId, properties, (tab) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(tab || null);
+      });
+    });
+  }
+
+  function focusWindow(windowId) {
+    return new Promise((resolve) => {
+      if (
+        !windowId ||
+        !chrome.windows ||
+        typeof chrome.windows.update !== "function"
+      ) {
+        resolve(null);
+        return;
+      }
+      chrome.windows.update(windowId, { focused: true }, (window) => {
+        resolve(chrome.runtime.lastError ? null : window || null);
+      });
+    });
+  }
+
+  function urlsMatch(left, right) {
+    if (!left || !right) {
+      return false;
+    }
+    if (left === right) {
+      return true;
+    }
+    try {
+      const first = new URL(left);
+      const second = new URL(right);
+      if (first.hash || second.hash) {
+        return first.href === second.href;
+      }
+      return (
+        first.origin === second.origin &&
+        first.pathname.replace(/\/$/, "") ===
+          second.pathname.replace(/\/$/, "") &&
+        first.search === second.search
+      );
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async function focusOpenTab(url) {
+    const tabs = await queryTabs({}).catch(() => []);
+    const existing = tabs.find(
+      (tab) =>
+        tab.id &&
+        (urlsMatch(tab.url, url) || urlsMatch(tab.pendingUrl, url))
+    );
+    if (!existing) {
+      return false;
+    }
+    try {
+      const activeTab = await updateTab(existing.id, { active: true });
+      await focusWindow(activeTab?.windowId || existing.windowId);
+      return Boolean(activeTab);
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function showToast(message, isError) {
     clearTimeout(state.toastTimer);
     elements.toast.textContent = message;
@@ -161,6 +270,36 @@
       : I18n.t("{hours} 小时", { hours });
   }
 
+  function maxWatchedLabel(show) {
+    const label =
+      show.maxWatchedEpisodeLabel ||
+      (Number(show.maxWatchedEpisodeNumber) > 0
+        ? Core.episodeLabelFromNumber(show.maxWatchedEpisodeNumber)
+        : "");
+    return label ? I18n.episodeLabel(label) : "--";
+  }
+
+  function latestEpisodeLabel(show) {
+    const label =
+      show.latestEpisodeLabel ||
+      (Number(show.latestEpisodeNumber) > 0
+        ? Core.episodeLabelFromNumber(show.latestEpisodeNumber)
+        : "");
+    return label ? I18n.episodeLabel(label) : I18n.t("未知");
+  }
+
+  function localizeLatestCheckError(error) {
+    const source = String(error || "").trim();
+    if (!source) {
+      return "";
+    }
+    const statusMatch = source.match(/^网站返回错误\s+(\d+)$/);
+    if (statusMatch) {
+      return I18n.t("网站返回错误 {status}", { status: statusMatch[1] });
+    }
+    return I18n.t(source);
+  }
+
   function isComplete(episode) {
     return (
       Boolean(episode.completed) ||
@@ -189,6 +328,10 @@
       show.name,
       show.pageTitle,
       show.episodeLabel,
+      show.maxWatchedEpisodeLabel,
+      show.maxWatchedEpisodeNumber,
+      show.latestEpisodeLabel,
+      show.latestEpisodeNumber,
       show.siteLabel,
       ...getEpisodesForShow(show.id).flatMap((episode) => [
         episode.episodeLabel,
@@ -462,7 +605,15 @@
         active: show.id === state.selectedShowId,
         episodeCount: getEpisodesForShow(show.id).length,
         episodeLabel: show.episodeLabel,
+        hasNewEpisode: Boolean(show.hasNewEpisode),
         id: show.id,
+        latestCheckedAt: Number(show.latestCheckedAt) || 0,
+        latestCheckError: show.latestCheckError || "",
+        latestEpisodeLabel: show.latestEpisodeLabel || "",
+        latestEpisodeNumber: Number(show.latestEpisodeNumber) || 0,
+        latestEpisodeStatus: show.latestEpisodeStatus || "unknown",
+        maxWatchedEpisodeLabel: show.maxWatchedEpisodeLabel || "",
+        maxWatchedEpisodeNumber: Number(show.maxWatchedEpisodeNumber) || 0,
         name: show.name,
         pending: state.pinPending.has(show.id),
         pinned: Boolean(show.pinned),
@@ -506,6 +657,8 @@
         const episodes = getEpisodesForShow(show.id);
         const active = show.id === state.selectedShowId;
         const pinPending = state.pinPending.has(show.id);
+        const highestLabel = maxWatchedLabel(show);
+        const latestLabel = latestEpisodeLabel(show);
         return `
           <div class="show-item${active ? " is-active" : ""}${
             show.pinned ? " is-pinned" : ""
@@ -530,6 +683,24 @@
                   · ${escapeHtml(
                     I18n.t("{count} 集记录", { count: episodes.length })
                   )}
+                </span>
+                <span class="show-meta show-meta-secondary">
+                  <span class="show-meta-item">${escapeHtml(
+                    I18n.t("最高 {episode}", { episode: highestLabel })
+                  )}</span>
+                  <span class="meta-separator">·</span>
+                  <span class="show-meta-item">${escapeHtml(
+                    I18n.t("最新 {episode}", { episode: latestLabel })
+                  )}</span>
+                  ${
+                    show.hasNewEpisode
+                      ? `<span
+                          class="new-episode-tag"
+                          aria-label="${escapeAttr(I18n.t("有新集"))}"
+                          title="${escapeAttr(I18n.t("有新集"))}"
+                        >${escapeHtml(I18n.t("新集"))}</span>`
+                      : ""
+                  }
                 </span>
               </span>
               <span class="chevron">${iconMarkup("chevron-right", 16)}</span>
@@ -596,6 +767,8 @@
           class="icon-button"
           type="button"
           data-open-url="${escapeAttr(episode.url)}"
+          data-open-show-id="${escapeAttr(episode.showId)}"
+          data-open-episode-id="${escapeAttr(episode.id)}"
           aria-label="${escapeAttr(
             I18n.t("打开{episode}", {
               episode: I18n.episodeLabel(episode.episodeLabel || "本集")
@@ -709,6 +882,16 @@
       (sum, episode) => sum + Math.max(0, episode.position || 0),
       0
     );
+    const highestLabel = maxWatchedLabel(show);
+    const latestLabel = latestEpisodeLabel(show);
+    const latestCheckError = localizeLatestCheckError(show.latestCheckError);
+    const latestCheckText = latestCheckError
+      ? I18n.t("检查失败")
+      : show.latestCheckedAt
+        ? I18n.t("最近检查 {time}", {
+            time: I18n.relativeTime(show.latestCheckedAt)
+          })
+        : I18n.t("尚未检查网站更新");
 
     elements.detailPanel.innerHTML = `
       <header class="detail-header">
@@ -730,9 +913,18 @@
             </p>
           </div>
           <div class="detail-actions">
-            <button class="button button-primary" type="button" data-open-url="${escapeAttr(show.url)}">
+            <button
+              class="button button-primary"
+              type="button"
+              data-resume-show-id="${escapeAttr(show.id)}"
+              ${
+                state.resumePendingShowId === show.id
+                  ? "disabled aria-busy=\"true\""
+                  : ""
+              }
+            >
               ${iconMarkup("play", 16)}
-              <span>继续观看</span>
+              <span>${state.resumePendingShowId === show.id ? "正在续播" : "继续观看"}</span>
             </button>
             <button
               class="button button-danger-outline"
@@ -747,19 +939,45 @@
         </div>
 
         <div class="stats-grid">
-          <article class="stat-card">
+          <article class="stat-card" data-stat="max-watched">
+            <p class="stat-label">最高观看</p>
+            <p class="stat-value stat-value-episode">${escapeHtml(highestLabel)}</p>
+          </article>
+          <article class="stat-card${show.hasNewEpisode ? " is-update" : ""}" data-stat="latest-episode">
+            <p class="stat-label">网站最新</p>
+            <p class="stat-value stat-value-episode${show.hasNewEpisode ? " is-accent" : ""}">${escapeHtml(latestLabel)}</p>
+            ${
+              show.hasNewEpisode
+                ? `<span class="stat-update">${iconMarkup("circle-check", 12)}<span>有新集</span></span>`
+                : ""
+            }
+          </article>
+          <article class="stat-card" data-stat="episode-count">
             <p class="stat-label">剧集记录</p>
             <p class="stat-value">${allEpisodes.length}</p>
           </article>
-          <article class="stat-card">
+          <article class="stat-card" data-stat="completed-count">
             <p class="stat-label">已看完</p>
             <p class="stat-value is-accent">${completeCount}</p>
           </article>
-          <article class="stat-card">
+          <article class="stat-card" data-stat="watch-time">
             <p class="stat-label">累计记录时长</p>
             <p class="stat-value">${escapeHtml(formatTotalDuration(totalPosition))}</p>
           </article>
         </div>
+
+        <p
+          class="latest-check${latestCheckError ? " is-error" : show.latestCheckedAt ? " is-ok" : ""}"
+          title="${escapeAttr(I18n.t("浏览器运行时每小时自动检查"))}"
+        >
+          ${iconMarkup(latestCheckError ? "x" : "refresh-cw", 13)}
+          <span>${escapeHtml(latestCheckText)}</span>
+          ${
+            latestCheckError
+              ? `<span class="latest-check-detail">${escapeHtml(latestCheckError)}</span>`
+              : ""
+          }
+        </p>
       </header>
 
       <div class="episode-toolbar">
@@ -844,14 +1062,83 @@
     }
   }
 
-  async function openUrl(url) {
-    if (!url) {
-      showToast(I18n.t("这条记录没有可打开的页面"), true);
+  async function resumeShow(showId, episodeId) {
+    const show = state.shows.find((item) => item.id === showId);
+    const episode = episodeId
+      ? state.episodes.find((item) => item.id === episodeId)
+      : null;
+    if (!show || state.resumePendingShowId) {
       return;
     }
-    await new Promise((resolve) => {
-      chrome.tabs.create({ url }, () => resolve());
-    });
+    if (episodeId && !episode) {
+      showToast(I18n.t("追踪记录不存在"), true);
+      return;
+    }
+
+    state.resumePendingShowId = showId;
+    const button = episodeId
+      ? document.querySelector(
+          `[data-open-episode-id="${CSS.escape(episodeId)}"]`
+        )
+      : document.querySelector(
+          `[data-resume-show-id="${CSS.escape(showId)}"]`
+        );
+    const buttonLabel = button && button.querySelector("span");
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
+    if (buttonLabel) {
+      buttonLabel.textContent = I18n.t("正在续播");
+    }
+    showToast(I18n.t("正在恢复播放位置"));
+
+    try {
+      const message = {
+        id: showId,
+        type: "VT_RESUME_SHOW"
+      };
+      if (episodeId) {
+        message.episodeId = episodeId;
+      }
+      const response = await sendRuntime(message);
+      if (!response.ok) {
+        throw new Error(response.error || I18n.t("无法打开观看页面"));
+      }
+
+      const episode = I18n.episodeLabel(
+        response.episodeLabel || show.episodeLabel || "本集"
+      );
+      if (response.resumed) {
+        showToast(
+          I18n.t("已从 {time} 继续播放{episode}", {
+            episode,
+            time: Core.formatTime(response.currentTime)
+          })
+        );
+      } else if (Number(response.requestedPosition) > 0) {
+        showToast(
+          I18n.t("{episode}已打开，网站暂不支持自动定位", {
+            episode
+          })
+        );
+      } else if (response.allComplete) {
+        showToast(I18n.t("这部剧已经看完，已打开最近一集"));
+      } else {
+        showToast(I18n.t("已打开{episode}", { episode }));
+      }
+    } catch (error) {
+      showToast(error.message || I18n.t("无法打开观看页面"), true);
+    } finally {
+      state.resumePendingShowId = null;
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
+      if (buttonLabel && buttonLabel.isConnected) {
+        buttonLabel.textContent = I18n.t("继续观看");
+      }
+    }
   }
 
   async function exportBackup() {
@@ -1100,9 +1387,103 @@
     );
   }
 
+  function closestActionTarget(event, selector) {
+    const path =
+      typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const target of path) {
+      if (target && typeof target.matches === "function" && target.matches(selector)) {
+        return target;
+      }
+    }
+    return event.target && typeof event.target.closest === "function"
+      ? event.target.closest(selector)
+      : null;
+  }
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      const guard = state.actionPointerGuard;
+      if (!guard || Number(event.detail) === 0) {
+        return;
+      }
+      state.actionPointerGuard = null;
+      if (Date.now() - guard.at > 1500) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    },
+    true
+  );
+
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0 || event.isPrimary === false) {
+        return;
+      }
+      const resumeButton = closestActionTarget(event, "[data-resume-show-id]");
+      const openButton = closestActionTarget(event, "[data-open-url]");
+      if (!resumeButton && !openButton) {
+        return;
+      }
+
+      state.actionPointerGuard = {
+        at: Date.now(),
+        key: resumeButton
+          ? `resume:${resumeButton.dataset.resumeShowId}`
+          : `open:${openButton.dataset.openEpisodeId}`
+      };
+      event.preventDefault();
+      event.stopPropagation();
+      if (resumeButton) {
+        void resumeShow(resumeButton.dataset.resumeShowId);
+      } else {
+        void resumeShow(
+          openButton.dataset.openShowId,
+          openButton.dataset.openEpisodeId
+        );
+      }
+    },
+    true
+  );
+
+  const clearPointerActionGuard = () => {
+    const guard = state.actionPointerGuard;
+    if (!guard) {
+      return;
+    }
+    setTimeout(() => {
+      if (state.actionPointerGuard === guard) {
+        state.actionPointerGuard = null;
+      }
+    }, 0);
+  };
+  document.addEventListener("pointerup", clearPointerActionGuard, true);
+  document.addEventListener("pointercancel", clearPointerActionGuard, true);
+
   document.addEventListener("click", (event) => {
-    const deleteShowButton = event.target.closest("[data-delete-show]");
+    const resumeButton = closestActionTarget(event, "[data-resume-show-id]");
+    if (resumeButton) {
+      event.preventDefault();
+      void resumeShow(resumeButton.dataset.resumeShowId);
+      return;
+    }
+
+    const openButton = closestActionTarget(event, "[data-open-url]");
+    if (openButton) {
+      event.preventDefault();
+      void resumeShow(
+        openButton.dataset.openShowId,
+        openButton.dataset.openEpisodeId
+      );
+      return;
+    }
+
+    const deleteShowButton = closestActionTarget(event, "[data-delete-show]");
     if (deleteShowButton) {
+      event.preventDefault();
       openDeleteDialog({
         label: deleteShowButton.dataset.showLabel,
         showId: deleteShowButton.dataset.deleteShow,
@@ -1111,8 +1492,12 @@
       return;
     }
 
-    const deleteEpisodeButton = event.target.closest("[data-delete-episode]");
+    const deleteEpisodeButton = closestActionTarget(
+      event,
+      "[data-delete-episode]"
+    );
     if (deleteEpisodeButton) {
+      event.preventDefault();
       openDeleteDialog({
         episodeId: deleteEpisodeButton.dataset.deleteEpisode,
         label: deleteEpisodeButton.dataset.episodeLabel,
@@ -1123,30 +1508,27 @@
       return;
     }
 
-    const pinShowButton = event.target.closest("[data-pin-show-id]");
+    const pinShowButton = closestActionTarget(event, "[data-pin-show-id]");
     if (pinShowButton) {
+      event.preventDefault();
       void toggleShowPin(pinShowButton.dataset.pinShowId);
       return;
     }
 
-    const showButton = event.target.closest("[data-show-id]");
+    const showButton = closestActionTarget(event, "[data-show-id]");
     if (showButton) {
+      event.preventDefault();
       state.selectedShowId = showButton.dataset.showId;
       renderShows();
       renderDetail();
       return;
     }
 
-    const filterButton = event.target.closest("[data-filter]");
+    const filterButton = closestActionTarget(event, "[data-filter]");
     if (filterButton) {
+      event.preventDefault();
       state.filter = filterButton.dataset.filter;
       renderDetail();
-      return;
-    }
-
-    const openButton = event.target.closest("[data-open-url]");
-    if (openButton) {
-      void openUrl(openButton.dataset.openUrl);
     }
   });
 
@@ -1368,6 +1750,7 @@
           key.startsWith("vt.show.") ||
           key.startsWith("vt.episode.") ||
           key.startsWith("vt.device.") ||
+          key.startsWith("vt.latest.") ||
           key.startsWith("vt.local.") ||
           key === "vt.deviceProfile.v1" ||
           key === "vt.syncIssue"

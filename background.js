@@ -1,22 +1,29 @@
-importScripts("core.js", "i18n.js");
+importScripts("core.js", "i18n.js", "episode-discovery.js");
 
 const Core = self.VideoTrackerCore;
+const EpisodeDiscovery = self.VideoTrackerEpisodeDiscovery;
 const I18n = self.VideoTrackerI18n;
 const ACTIVE_SESSIONS_KEY = "vt.activeSessions.v1";
 const DEVICE_PROFILE_KEY = "vt.deviceProfile.v1";
 const DEVICE_SYNC_PREFIX = "vt.device.";
 const EPISODE_LOCAL_PREFIX = "vt.local.episode.";
 const EPISODE_SYNC_PREFIX = "vt.episode.";
+const LATEST_EPISODE_LOCAL_PREFIX = "vt.local.latest.";
+const LATEST_EPISODE_SYNC_PREFIX = "vt.latest.";
 const LOCAL_SCHEMA_KEY = "vt.schemaVersion";
 const LOCAL_SHOW_PREFIX = "vt.local.show.";
 const SYNC_ISSUE_KEY = "vt.syncIssue";
 const SYNC_SHOW_PREFIX = "vt.show.";
 const TRACKING_SUPPRESSION_KEY = "vt.trackingSuppressions.v1";
 const TRACKING_ALARM = "vt.trackingHeartbeat";
-const SCHEMA_VERSION = 2;
+const LATEST_EPISODE_ALARM = "vt.latestEpisodeCheck";
+const SCHEMA_VERSION = 3;
 const SYNC_INTERVAL_MS = 15000;
 const SNAPSHOT_CACHE_MS = 700;
 const ALARM_PERIOD_MINUTES = 0.5;
+const LATEST_EPISODE_ALARM_PERIOD_MINUTES = 60;
+const LATEST_EPISODE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const LATEST_EPISODE_FETCH_TIMEOUT_MS = 12000;
 const REGRESSION_CONFIRM_MS = 60000;
 const MAX_WATCH_SAMPLE_MS = 45000;
 const POSITION_REGRESSION_TOLERANCE_SEC = 15;
@@ -27,9 +34,18 @@ const AD_DURATION_DROP_RATIO = 0.35;
 const AD_STABILITY_MS = 6000;
 const COMPLETION_PROGRESS_RATIO = 0.8;
 const COMPLETION_MIN_WATCH_SECONDS = 300;
+const RESUME_REWIND_SECONDS = 3;
+const RESUME_NEAR_END_MIN_SECONDS = 15;
+const RESUME_NEAR_END_MAX_SECONDS = 30;
+const RESUME_SEEK_RETRY_MS = 500;
+const RESUME_SEEK_MAX_ATTEMPTS = 120;
+const RESUME_SEEK_STABLE_SAMPLES = 8;
+const RESUME_TAB_LOAD_TIMEOUT_MS = 12000;
 
 let sessionsCache = null;
 let sessionsLoading = null;
+let latestEpisodeCheckPromise = null;
+let latestUpdateBadgeText = "";
 const resumeChecks = new Map();
 const snapshotCache = new Map();
 
@@ -85,6 +101,52 @@ function getTab(tabId) {
   });
 }
 
+function createTab(properties) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create(properties, (tab) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(tab || null);
+    });
+  });
+}
+
+function updateTab(tabId, properties) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.update(tabId, properties, (tab) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(tab || null);
+    });
+  });
+}
+
+function focusWindow(windowId) {
+  return new Promise((resolve) => {
+    if (
+      !windowId ||
+      !chrome.windows ||
+      typeof chrome.windows.update !== "function"
+    ) {
+      resolve(null);
+      return;
+    }
+    chrome.windows.update(windowId, { focused: true }, (window) => {
+      resolve(chrome.runtime.lastError ? null : window || null);
+    });
+  });
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function queryTabs(queryInfo) {
   return new Promise((resolve, reject) => {
     chrome.tabs.query(queryInfo, (tabs) => {
@@ -117,8 +179,15 @@ function setBadge(tabId, active) {
   }
 
   try {
-    chrome.action.setBadgeBackgroundColor({ color: "#f4b860", tabId });
-    chrome.action.setBadgeText({ tabId, text: active ? "ON" : "" });
+    const hasUpdates = latestUpdateBadgeText === "NEW";
+    chrome.action.setBadgeBackgroundColor({
+      color: hasUpdates ? "#ff6b57" : "#f4b860",
+      tabId
+    });
+    chrome.action.setBadgeText({
+      tabId,
+      text: hasUpdates ? "NEW" : active ? "ON" : ""
+    });
   } catch (_error) {
     // The tab may disappear between a message and this visual update.
   }
@@ -290,17 +359,50 @@ function localKeyForEpisode(episodeId) {
   return `${EPISODE_LOCAL_PREFIX}${episodeId}`;
 }
 
+function latestSyncKeyFor(showId) {
+  return `${LATEST_EPISODE_SYNC_PREFIX}${showId}`;
+}
+
+function latestLocalKeyFor(showId) {
+  return `${LATEST_EPISODE_LOCAL_PREFIX}${showId}`;
+}
+
 function limitText(value, maximum) {
   return Core.normalizeText(value).slice(0, maximum);
 }
 
 function sanitizeRecord(record) {
+  const episodeLabel = limitText(record.episodeLabel, 40);
+  const currentEpisodeNumber =
+    Core.parseEpisodeNumber(episodeLabel) || 0;
+  const storedMaxEpisodeNumber = Math.max(
+    0,
+    Math.floor(Number(record.maxWatchedEpisodeNumber) || 0)
+  );
+  const maxWatchedEpisodeNumber = Math.max(
+    currentEpisodeNumber,
+    storedMaxEpisodeNumber
+  );
+  const storedMaxEpisodeLabel = limitText(
+    record.maxWatchedEpisodeLabel,
+    40
+  );
+  const maxWatchedEpisodeLabel =
+    maxWatchedEpisodeNumber > 0
+      ? Core.parseEpisodeNumber(storedMaxEpisodeLabel) ===
+        maxWatchedEpisodeNumber
+        ? storedMaxEpisodeLabel
+        : Core.episodeLabelFromNumber(maxWatchedEpisodeNumber)
+      : "";
+
   return {
     duration: Math.max(0, Number(record.duration) || 0),
     episodeCompleted: Boolean(record.episodeCompleted),
-    episodeLabel: limitText(record.episodeLabel, 40),
+    episodeLabel,
     episodeSource: record.episodeSource === "manual" ? "manual" : "auto",
     id: limitText(record.id, 80),
+    maxWatchedEpisodeLabel,
+    maxWatchedEpisodeNumber,
     name: limitText(record.name, 100) || I18n.t("未命名剧集"),
     pageTitle: limitText(record.pageTitle, 300),
     pinned: Boolean(record.pinned),
@@ -314,6 +416,33 @@ function sanitizeRecord(record) {
     siteLabel: limitText(record.siteLabel, 40) || I18n.t("网页视频"),
     updatedAt: Number(record.updatedAt) || Date.now(),
     url: String(record.url || "").slice(0, 1800),
+    version: SCHEMA_VERSION
+  };
+}
+
+function sanitizeLatestEpisodeState(record) {
+  const episodeNumber = Math.max(
+    0,
+    Math.floor(Number(record.episodeNumber) || 0)
+  );
+  const episodeLabel = limitText(record.episodeLabel, 40);
+
+  return {
+    checkedAt: Math.max(0, Number(record.checkedAt) || 0),
+    detectedAt: Math.max(0, Number(record.detectedAt) || 0),
+    episodeLabel:
+      episodeNumber > 0
+        ? Core.parseEpisodeNumber(episodeLabel) === episodeNumber
+          ? episodeLabel
+          : Core.episodeLabelFromNumber(episodeNumber)
+        : "",
+    episodeNumber,
+    error: limitText(record.error, 200),
+    id: limitText(record.id || record.showId, 80),
+    showId: limitText(record.showId || record.id, 80),
+    source: limitText(record.source, 40),
+    status: record.status === "error" ? "error" : "ok",
+    updatedAt: Number(record.updatedAt) || Date.now(),
     version: SCHEMA_VERSION
   };
 }
@@ -649,6 +778,26 @@ async function writeRecord(record, episodeRecord) {
   }
 }
 
+async function writeLatestEpisodeState(state) {
+  const normalized = sanitizeLatestEpisodeState(state);
+  if (!normalized.showId) {
+    throw new Error(I18n.t("追踪记录不存在"));
+  }
+
+  await storageSet(chrome.storage.local, {
+    [latestLocalKeyFor(normalized.showId)]: normalized
+  });
+  try {
+    await storageSet(chrome.storage.sync, {
+      [latestSyncKeyFor(normalized.showId)]: normalized
+    });
+    return { state: normalized, synced: true };
+  } catch (error) {
+    await setSyncIssue(error);
+    return { state: normalized, synced: false };
+  }
+}
+
 async function getRecord(showId) {
   const key = syncKeyFor(showId);
   const localKey = localKeyFor(showId);
@@ -686,6 +835,19 @@ function collectEpisodes(stored, prefix) {
     }
   }
   return episodes;
+}
+
+function collectLatestEpisodeStates(stored, prefix) {
+  const states = [];
+  for (const [key, value] of Object.entries(stored || {})) {
+    if (key.startsWith(prefix) && value && value.showId) {
+      states.push({
+        ...sanitizeLatestEpisodeState(value),
+        storageKey: key
+      });
+    }
+  }
+  return states;
 }
 
 async function readLocalShows() {
@@ -728,6 +890,22 @@ function buildCloudMergePayload(syncData, localData) {
     }
   }
 
+  for (const state of collectLatestEpisodeStates(
+    localData,
+    LATEST_EPISODE_LOCAL_PREFIX
+  )) {
+    const normalized = sanitizeLatestEpisodeState(state);
+    const key = latestSyncKeyFor(normalized.showId);
+    const cloudRecord = syncData[key];
+    if (
+      !cloudRecord ||
+      Number(normalized.updatedAt) > Number(cloudRecord.updatedAt)
+    ) {
+      payload[key] = normalized;
+      pending += 1;
+    }
+  }
+
   return { payload, pending };
 }
 
@@ -749,6 +927,21 @@ function buildLocalMirrorPayload(syncData, localData) {
   for (const episode of collectEpisodes(syncData, EPISODE_SYNC_PREFIX)) {
     const normalized = sanitizeEpisodeRecord(episode);
     const key = localKeyForEpisode(normalized.id);
+    const localRecord = localData[key];
+    if (
+      !localRecord ||
+      Number(normalized.updatedAt) > Number(localRecord.updatedAt)
+    ) {
+      payload[key] = normalized;
+    }
+  }
+
+  for (const state of collectLatestEpisodeStates(
+    syncData,
+    LATEST_EPISODE_SYNC_PREFIX
+  )) {
+    const normalized = sanitizeLatestEpisodeState(state);
+    const key = latestLocalKeyFor(normalized.showId);
     const localRecord = localData[key];
     if (
       !localRecord ||
@@ -913,6 +1106,282 @@ async function getAllEpisodes() {
   );
 }
 
+async function getAllLatestEpisodeStates() {
+  const [syncResult, localResult] = await Promise.all([
+    storageGet(chrome.storage.sync, null).catch(() => ({})),
+    storageGet(chrome.storage.local, null).catch(() => ({}))
+  ]);
+
+  const statesByShowId = new Map();
+  for (const state of [
+    ...collectLatestEpisodeStates(syncResult, LATEST_EPISODE_SYNC_PREFIX),
+    ...collectLatestEpisodeStates(localResult, LATEST_EPISODE_LOCAL_PREFIX)
+  ]) {
+    const current = statesByShowId.get(state.showId);
+    if (!current || Number(state.updatedAt) > Number(current.updatedAt)) {
+      statesByShowId.set(state.showId, state);
+    }
+  }
+
+  return Array.from(statesByShowId.values());
+}
+
+async function reconcileMaxWatchedEpisodes(records, episodes) {
+  const maxByShowId = new Map();
+  for (const episode of episodes) {
+    const number = Core.parseEpisodeNumber(episode.episodeLabel);
+    if (number != null) {
+      maxByShowId.set(
+        episode.showId,
+        Math.max(number, maxByShowId.get(episode.showId) || 0)
+      );
+    }
+  }
+
+  return Promise.all(
+    records.map(async (record) => {
+      const maxFromHistory = maxByShowId.get(record.id) || 0;
+      if (maxFromHistory <= Number(record.maxWatchedEpisodeNumber || 0)) {
+        return record;
+      }
+
+      const result = await writeRecord(
+        sanitizeRecord({
+          ...record,
+          maxWatchedEpisodeLabel:
+            Core.episodeLabelFromNumber(maxFromHistory),
+          maxWatchedEpisodeNumber: maxFromHistory
+        })
+      );
+      return result.record;
+    })
+  );
+}
+
+function presentRecordWithLatest(record, latestState) {
+  const latest = latestState
+    ? sanitizeLatestEpisodeState(latestState)
+    : null;
+  return {
+    ...record,
+    hasNewEpisode: Boolean(
+      latest &&
+        latest.episodeNumber >
+          Number(record.maxWatchedEpisodeNumber || 0)
+    ),
+    latestCheckError: latest?.error || "",
+    latestCheckedAt: Number(latest?.checkedAt) || 0,
+    latestEpisodeDetectedAt: Number(latest?.detectedAt) || 0,
+    latestEpisodeLabel: latest?.episodeLabel || "",
+    latestEpisodeNumber: Number(latest?.episodeNumber) || 0,
+    latestEpisodeSource: latest?.source || "",
+    latestEpisodeStatus: latest?.status || "unknown"
+  };
+}
+
+function presentRecordsWithLatest(records, latestStates) {
+  const latestByShowId = new Map(
+    latestStates.map((state) => [state.showId, state])
+  );
+  return records.map((record) =>
+    presentRecordWithLatest(record, latestByShowId.get(record.id))
+  );
+}
+
+async function updateLatestUpdateBadge() {
+  const [rawRecords, episodes, latestStates, sessions] = await Promise.all([
+    getAllRecords(),
+    getAllEpisodes(),
+    getAllLatestEpisodeStates(),
+    loadSessions().catch(() => ({}))
+  ]);
+  const records = await reconcileMaxWatchedEpisodes(rawRecords, episodes);
+  const hasUpdates = presentRecordsWithLatest(
+    records,
+    latestStates
+  ).some((record) => record.hasNewEpisode);
+  const text = hasUpdates ? "NEW" : "";
+  if (text === latestUpdateBadgeText) {
+    return hasUpdates;
+  }
+
+  latestUpdateBadgeText = text;
+  try {
+    const color = hasUpdates ? "#ff6b57" : "#f4b860";
+    chrome.action.setBadgeBackgroundColor({ color });
+    chrome.action.setBadgeText({ text });
+    for (const tabId of Object.keys(sessions).map(Number).filter(Boolean)) {
+      chrome.action.setBadgeBackgroundColor({ color, tabId });
+      chrome.action.setBadgeText({
+        tabId,
+        text: hasUpdates ? "NEW" : "ON"
+      });
+    }
+  } catch (_error) {
+    // Badge updates must not interrupt tracking or synchronization.
+  }
+  return hasUpdates;
+}
+
+async function fetchLatestEpisodeFromPage(record) {
+  if (typeof fetch !== "function") {
+    throw new Error(I18n.t("当前环境无法检查网站更新"));
+  }
+  if (!/^https?:\/\//i.test(record.url || "")) {
+    throw new Error(I18n.t("没有可检查的观看页面"));
+  }
+
+  const controller =
+    typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+  const timer = setTimeout(() => {
+    controller?.abort();
+  }, LATEST_EPISODE_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(record.url, {
+      cache: "no-store",
+      credentials: "include",
+      redirect: "follow",
+      signal: controller?.signal
+    });
+    if (!response || !response.ok) {
+      throw new Error(
+        I18n.t("网站返回错误 {status}", {
+          status: Number(response && response.status) || 0
+        })
+      );
+    }
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkLatestEpisodes(options) {
+  const settings = options || {};
+  if (latestEpisodeCheckPromise) {
+    return latestEpisodeCheckPromise;
+  }
+
+  const check = (async () => {
+    const now = Date.now();
+    const [rawRecords, storedEpisodes, initialStates] = await Promise.all([
+      getAllRecords(),
+      getAllEpisodes(),
+      getAllLatestEpisodeStates()
+    ]);
+    const records = await reconcileMaxWatchedEpisodes(
+      rawRecords,
+      storedEpisodes
+    );
+    const statesByShowId = new Map(
+      initialStates.map((state) => [state.showId, state])
+    );
+    const candidates = records.filter((record) => {
+      if (!/^https?:\/\//i.test(record.url || "")) {
+        return false;
+      }
+      if (settings.force) {
+        return true;
+      }
+      const state = statesByShowId.get(record.id);
+      return (
+        !state ||
+        now - Number(state.checkedAt || 0) >=
+          LATEST_EPISODE_CHECK_INTERVAL_MS
+      );
+    });
+
+    let checked = 0;
+    let failed = 0;
+    let updated = 0;
+    let deferredSync = 0;
+
+    for (const record of candidates) {
+      checked += 1;
+      let discovery = null;
+      let error = null;
+      try {
+        const html = await fetchLatestEpisodeFromPage(record);
+        if (!EpisodeDiscovery || !EpisodeDiscovery.extractLatestEpisode) {
+          throw new Error(I18n.t("当前环境无法检查网站更新"));
+        }
+        discovery = EpisodeDiscovery.extractLatestEpisode(html, {
+          currentUrl: record.url,
+          seriesName: record.name
+        });
+        if (!discovery) {
+          throw new Error(I18n.t("未找到分集信息"));
+        }
+      } catch (fetchError) {
+        error =
+          fetchError instanceof Error
+            ? fetchError.message
+            : String(fetchError);
+      }
+
+      const currentRecord = await getRecord(record.id);
+      if (!currentRecord) {
+        continue;
+      }
+
+      const currentStates = await getAllLatestEpisodeStates();
+      const currentState =
+        currentStates.find((state) => state.showId === record.id) || null;
+      const previousNumber = Number(currentState?.episodeNumber) || 0;
+      const nextNumber = discovery
+        ? Math.max(previousNumber, discovery.number)
+        : previousNumber;
+      const hasNewNumber = Boolean(
+        discovery && discovery.number > previousNumber
+      );
+      if (hasNewNumber) {
+        updated += 1;
+      }
+      if (error) {
+        failed += 1;
+      }
+
+      const result = await writeLatestEpisodeState({
+        checkedAt: Date.now(),
+        detectedAt: hasNewNumber
+          ? Date.now()
+          : currentState?.detectedAt || 0,
+        episodeLabel:
+          nextNumber > 0
+            ? Core.episodeLabelFromNumber(nextNumber)
+            : "",
+        episodeNumber: nextNumber,
+        error: error || "",
+        id: record.id,
+        showId: record.id,
+        source: discovery?.source || currentState?.source || "",
+        status: error ? "error" : "ok",
+        updatedAt: Date.now()
+      });
+      if (!result.synced) {
+        deferredSync += 1;
+      }
+    }
+
+    await updateLatestUpdateBadge().catch(() => {});
+    return {
+      checked,
+      deferredSync,
+      failed,
+      ok: true,
+      updated
+    };
+  })();
+
+  latestEpisodeCheckPromise = check.finally(() => {
+    latestEpisodeCheckPromise = null;
+  });
+  return latestEpisodeCheckPromise;
+}
+
 function synthesizeCurrentEpisodes(records, episodes) {
   const existingEpisodes = new Set(
     episodes.map(
@@ -955,21 +1424,28 @@ function synthesizeCurrentEpisodes(records, episodes) {
 
 async function getLibraryState() {
   const syncState = await synchronizeStorage();
-  const [records, storedEpisodes] = await Promise.all([
+  const [rawRecords, storedEpisodes, latestStates] = await Promise.all([
     getAllRecords(),
-    getAllEpisodes()
+    getAllEpisodes(),
+    getAllLatestEpisodeStates()
   ]);
+  const records = await reconcileMaxWatchedEpisodes(
+    rawRecords,
+    storedEpisodes
+  );
   const episodes = synthesizeCurrentEpisodes(records, storedEpisodes);
+  const shows = presentRecordsWithLatest(records, latestStates);
   const localState = await storageGet(chrome.storage.local, SYNC_ISSUE_KEY).catch(
     () => ({})
   );
+  await updateLatestUpdateBadge().catch(() => {});
 
   return {
     episodes,
     device: syncState.device,
     devices: syncState.devices,
     ok: true,
-    shows: records,
+    shows,
     syncIssue: localState[SYNC_ISSUE_KEY] || null,
     syncState
   };
@@ -1046,8 +1522,11 @@ function inspectFrameInMainWorld() {
       return { detected: true, reason: "source" };
     }
 
-    let container = video.parentElement;
-    for (let depth = 0; depth < 6 && container; depth += 1) {
+    const videoRoot =
+      typeof video.getRootNode === "function" ? video.getRootNode() : null;
+    let container =
+      video.parentElement || (videoRoot && videoRoot.host ? videoRoot.host : null);
+    for (let depth = 0; depth < 12 && container; depth += 1) {
       if (container === document.body || container === document.documentElement) {
         break;
       }
@@ -1076,13 +1555,40 @@ function inspectFrameInMainWorld() {
           return { detected: true, reason: "overlay" };
         }
       }
-      container = container.parentElement;
+      const rootNode =
+        typeof container.getRootNode === "function"
+          ? container.getRootNode()
+          : null;
+      container =
+        container.parentElement ||
+        (rootNode && rootNode.host ? rootNode.host : null);
     }
 
     return { detected: false, reason: "" };
   };
 
-  const videos = Array.from(document.querySelectorAll("video"));
+  const videos = [];
+  const visitedRoots = new Set();
+  const visitedVideos = new Set();
+  const collectVideos = (root) => {
+    if (!root || visitedRoots.has(root)) {
+      return;
+    }
+    visitedRoots.add(root);
+
+    for (const video of root.querySelectorAll("video")) {
+      if (!visitedVideos.has(video)) {
+        visitedVideos.add(video);
+        videos.push(video);
+      }
+    }
+    for (const element of root.querySelectorAll("*")) {
+      if (element.shadowRoot) {
+        collectVideos(element.shadowRoot);
+      }
+    }
+  };
+  collectVideos(document);
   let bestVideo = null;
   let bestScore = -1;
   let bestAdEvidence = { detected: false, reason: "" };
@@ -1258,9 +1764,10 @@ function buildSnapshot(tab, results) {
 
 async function exportBackup() {
   await synchronizeStorage();
-  const [shows, episodes] = await Promise.all([
+  const [shows, episodes, latestStates] = await Promise.all([
     getAllRecords(),
-    getAllEpisodes()
+    getAllEpisodes(),
+    getAllLatestEpisodeStates()
   ]);
   return {
     backup: {
@@ -1268,6 +1775,10 @@ async function exportBackup() {
         sanitizeEpisodeRecord(episode)
       ),
       exportedAt: Date.now(),
+      latestStates: latestStates.map(
+        ({ storageKey: _storageKey, ...state }) =>
+          sanitizeLatestEpisodeState(state)
+      ),
       shows,
       version: 1
     },
@@ -1320,6 +1831,20 @@ async function importBackup(message) {
     }
   }
 
+  if (Array.isArray(backup.latestStates)) {
+    for (const source of backup.latestStates) {
+      const state = sanitizeLatestEpisodeState(source);
+      if (!state.showId) {
+        continue;
+      }
+      const key = latestSyncKeyFor(state.showId);
+      const existing = syncAll[key] || localAll[latestLocalKeyFor(state.showId)];
+      if (!existing || Number(state.updatedAt) >= Number(existing.updatedAt)) {
+        syncValues[key] = state;
+      }
+    }
+  }
+
   if (Object.keys(syncValues).length) {
     const localValues = {};
     for (const [key, value] of Object.entries(syncValues)) {
@@ -1328,6 +1853,10 @@ async function importBackup(message) {
       } else if (key.startsWith(EPISODE_SYNC_PREFIX)) {
         localValues[localKeyForEpisode(key.slice(EPISODE_SYNC_PREFIX.length))] =
           value;
+      } else if (key.startsWith(LATEST_EPISODE_SYNC_PREFIX)) {
+        localValues[
+          latestLocalKeyFor(key.slice(LATEST_EPISODE_SYNC_PREFIX.length))
+        ] = value;
       }
     }
     await storageSet(chrome.storage.local, localValues);
@@ -1339,6 +1868,7 @@ async function importBackup(message) {
     }
   }
 
+  await updateLatestUpdateBadge().catch(() => {});
   return {
     episodes: episodeCount,
     ok: true,
@@ -1401,6 +1931,780 @@ async function getTabSnapshot(tabId, options) {
     snapshotCache.set(tabId, { cachedAt: Date.now(), snapshot });
     return snapshot;
   }
+}
+
+function resumeEpisodeIsComplete(episode) {
+  return (
+    Boolean(episode.completed) ||
+    Core.calculateProgress(episode.position, episode.duration) >= 80
+  );
+}
+
+function resumePositionIsUsable(episode) {
+  const position = Math.max(0, Number(episode.position) || 0);
+  const duration = Math.max(0, Number(episode.duration) || 0);
+  if (!position || !duration || position >= duration) {
+    return false;
+  }
+  const nearEndSeconds = Math.min(
+    RESUME_NEAR_END_MAX_SECONDS,
+    Math.max(
+      Math.min(RESUME_NEAR_END_MIN_SECONDS, duration * 0.1),
+      duration * 0.02
+    )
+  );
+  return duration - position > nearEndSeconds;
+}
+
+function selectResumeTarget(show, episodes) {
+  const sorted = episodes
+    .filter((episode) => episode.showId === show.id)
+    .sort((left, right) => Number(right.updatedAt) - Number(left.updatedAt));
+  const currentLabel = Core.normalizeText(show.episodeLabel).toLocaleLowerCase();
+  const current =
+    sorted.find(
+      (episode) =>
+        Core.normalizeText(episode.episodeLabel).toLocaleLowerCase() ===
+        currentLabel
+    ) ||
+    (currentLabel
+      ? null
+      : sorted[0] || null);
+  const allComplete =
+    sorted.length > 0
+      ? sorted.every(resumeEpisodeIsComplete)
+      : resumeEpisodeIsComplete(show);
+
+  // An explicit "continue" should not skip a valid current record just
+  // because the 80% heuristic already marked it as complete.
+  if (current && resumePositionIsUsable(current)) {
+    return {
+      allComplete,
+      canResume: true,
+      current,
+      target: current
+    };
+  }
+
+  const unfinished = sorted.find(
+    (episode) => !resumeEpisodeIsComplete(episode)
+  );
+  const target = unfinished || current || sorted[0] || show;
+  return {
+    allComplete,
+    canResume: resumePositionIsUsable(target),
+    current,
+    target
+  };
+}
+
+async function waitForTabReady(tabId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let tab = null;
+
+  while (Date.now() < deadline) {
+    tab = await getTab(tabId).catch(() => null);
+    if (tab && (!tab.status || tab.status === "complete")) {
+      return tab;
+    }
+    await delay(250);
+  }
+
+  return tab || getTab(tabId).catch(() => null);
+}
+
+async function findReusableTab(url) {
+  const tabs = await queryTabs({}).catch(() => []);
+  return (
+    tabs.find(
+      (tab) =>
+        tab &&
+        tab.id &&
+        typeof tab.url === "string" &&
+        tab.url === url
+    ) || null
+  );
+}
+
+async function activateTab(tab) {
+  if (!tab || !tab.id) {
+    return null;
+  }
+  const activeTab = await updateTab(tab.id, { active: true }).catch(
+    () => tab
+  );
+  await focusWindow(tab.windowId);
+  return activeTab || tab;
+}
+
+// This function is serialized into the top frame by chrome.scripting.executeScript.
+// Keep it self-contained: it cannot reference background.js variables.
+function setResumeOverlayInMainWorld(payload) {
+  const overlayId = "video-tracker-resume-status";
+  const existing = document.getElementById(overlayId);
+  const message = String((payload && payload.message) || "");
+  if (!message) {
+    if (existing && existing.parentNode) {
+      existing.parentNode.removeChild(existing);
+    }
+    return;
+  }
+
+  let overlay = existing;
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = overlayId;
+    overlay.setAttribute("role", "status");
+    overlay.setAttribute("aria-live", "polite");
+    overlay.style.cssText = [
+      "position:fixed",
+      "z-index:2147483647",
+      "top:18px",
+      "left:50%",
+      "transform:translateX(-50%)",
+      "max-width:min(520px,calc(100vw - 32px))",
+      "padding:10px 16px",
+      "border:1px solid rgba(255,255,255,.22)",
+      "border-radius:8px",
+      "background:rgba(20,23,20,.92)",
+      "box-shadow:0 12px 34px rgba(0,0,0,.35)",
+      "color:#fff",
+      "font:600 14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif",
+      "text-align:center",
+      "pointer-events:none",
+      "transition:opacity 180ms ease"
+    ].join(";");
+    (document.documentElement || document.body).appendChild(overlay);
+  }
+  overlay.textContent = message;
+  overlay.style.opacity = "1";
+
+  const removeAfterMs = Math.max(0, Number(payload && payload.removeAfterMs) || 0);
+  if (removeAfterMs) {
+    setTimeout(() => {
+      const current = document.getElementById(overlayId);
+      if (!current) {
+        return;
+      }
+      current.style.opacity = "0";
+      setTimeout(() => {
+        if (current.parentNode) {
+          current.parentNode.removeChild(current);
+        }
+      }, 220);
+    }, removeAfterMs);
+  }
+}
+
+async function setResumeOverlay(tabId, message, removeAfterMs) {
+  await executeScript({
+    args: [{ message, removeAfterMs }],
+    target: { frameId: 0, tabId },
+    world: "MAIN",
+    func: setResumeOverlayInMainWorld
+  }).catch(() => []);
+}
+
+// This function is serialized into every frame by chrome.scripting.executeScript.
+// Keep it self-contained: it cannot reference background.js variables.
+function seekPlaybackInMainWorld(targetPosition, expectedDuration) {
+  const desired = Math.max(0, Number(targetPosition) || 0);
+  const baseline = Math.max(0, Number(expectedDuration) || 0);
+  const minimumCompatibleDuration =
+    baseline >= 180 ? baseline * 0.55 : 0;
+  const videos = [];
+  const visitedRoots = new Set();
+  const visitedVideos = new Set();
+  const collectVideos = (root) => {
+    if (!root || visitedRoots.has(root)) {
+      return;
+    }
+    visitedRoots.add(root);
+
+    for (const video of root.querySelectorAll("video")) {
+      if (!visitedVideos.has(video)) {
+        visitedVideos.add(video);
+        videos.push(video);
+      }
+    }
+    for (const element of root.querySelectorAll("*")) {
+      if (element.shadowRoot) {
+        collectVideos(element.shadowRoot);
+      }
+    }
+  };
+  collectVideos(document);
+  let bestVideo = null;
+  let bestScore = -Infinity;
+
+  for (const video of videos) {
+    const rect = video.getBoundingClientRect();
+    const style = getComputedStyle(video);
+    const duration = Number(video.duration);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      !Number.isFinite(duration) ||
+      duration <= 0
+    ) {
+      continue;
+    }
+
+    const durationCompatible =
+      !minimumCompatibleDuration || duration >= minimumCompatibleDuration;
+    const score =
+      (video.__videoTrackerResumeTarget ? 1e13 : 0) +
+      (durationCompatible ? 1e12 : 0) +
+      (!video.paused && !video.ended ? 1e10 : 0) +
+      Math.max(0, rect.width) * Math.max(0, rect.height) +
+      Math.min(duration, 10000);
+    if (score > bestScore) {
+      bestScore = score;
+      bestVideo = video;
+    }
+  }
+
+  if (!bestVideo) {
+    return { found: false, seeked: false };
+  }
+  const duration = Number(bestVideo.duration);
+  if (
+    minimumCompatibleDuration &&
+    duration < minimumCompatibleDuration
+  ) {
+    return {
+      duration,
+      found: true,
+      reason: "duration-mismatch",
+      seeked: false
+    };
+  }
+
+  const maximumPosition = Math.max(0, duration - 0.5);
+  const position = Math.min(desired, maximumPosition);
+  const installResumeGuard = (video, targetPosition) => {
+    let guard = video.__videoTrackerResumeGuard;
+    const now = Date.now();
+    if (!guard) {
+      guard = {
+        active: false,
+        expiresAt: 0,
+        position: 0,
+        restoring: false,
+        userInteracted: false
+      };
+      try {
+        video.__videoTrackerResumeGuard = guard;
+      } catch (_error) {
+        return;
+      }
+
+      const isSeekControl = (target) => {
+        if (!target || typeof target.closest !== "function") {
+          return false;
+        }
+        return Boolean(
+          target.closest(
+            [
+              "input[type='range']",
+              "[role='slider']",
+              "[aria-valuenow]",
+              "[class*='seek']",
+              "[class*='slider']",
+              "[class*='progress'][class*='bar']"
+            ].join(",")
+          )
+        );
+      };
+      const stopForUser = (event) => {
+        if (event.type === "keydown") {
+          if (
+            ![
+              "ArrowLeft",
+              "ArrowRight",
+              "Home",
+              "End",
+              "PageUp",
+              "PageDown"
+            ].includes(event.key)
+          ) {
+            return;
+          }
+        } else if (!isSeekControl(event.target)) {
+          return;
+        }
+        guard.active = false;
+        guard.userInteracted = true;
+        const pageGuard = window.__videoTrackerPageResumeGuard;
+        if (
+          pageGuard &&
+          Math.abs(Number(pageGuard.position) - guard.position) <= 2
+        ) {
+          pageGuard.active = false;
+        }
+      };
+      document.addEventListener("pointerdown", stopForUser, true);
+      document.addEventListener("keydown", stopForUser, true);
+
+      const restoreIfReset = () => {
+        if (
+          !guard.active ||
+          guard.userInteracted ||
+          guard.restoring ||
+          Date.now() > guard.expiresAt
+        ) {
+          return;
+        }
+        const currentDuration = Number(video.duration);
+        const currentTime = Number(video.currentTime) || 0;
+        if (
+          !Number.isFinite(currentDuration) ||
+          currentDuration <= 0 ||
+          guard.position >= currentDuration - 0.5
+        ) {
+          return;
+        }
+        const resetThreshold = Math.min(
+          6,
+          Math.max(1.5, guard.position * 0.03)
+        );
+        if (currentTime >= resetThreshold) {
+          return;
+        }
+
+        guard.restoring = true;
+        try {
+          video.currentTime = Math.min(
+            guard.position,
+            Math.max(0, currentDuration - 0.5)
+          );
+          if (video.paused) {
+            const playResult = video.play();
+            if (playResult && typeof playResult.catch === "function") {
+              playResult.catch(() => {});
+            }
+          }
+        } catch (_error) {
+          // A replaced media element can reject an old guard seek.
+        }
+        setTimeout(() => {
+          guard.restoring = false;
+        }, 500);
+      };
+
+      for (const eventName of [
+        "loadedmetadata",
+        "canplay",
+        "playing",
+        "seeked",
+        "timeupdate"
+      ]) {
+        video.addEventListener(eventName, restoreIfReset);
+      }
+    }
+
+    const startingNewGuard =
+      !guard.active ||
+      now > guard.expiresAt ||
+      Math.abs(Number(guard.position) - targetPosition) > 2;
+    if (startingNewGuard) {
+      guard.userInteracted = false;
+    }
+    guard.active = true;
+    guard.expiresAt = now + 20000;
+    guard.position = targetPosition;
+  };
+
+  const installPageResumeGuard = (targetPosition) => {
+    let pageGuard = window.__videoTrackerPageResumeGuard;
+    if (pageGuard && Date.now() > Number(pageGuard.expiresAt || 0)) {
+      if (pageGuard.timerId) {
+        clearInterval(pageGuard.timerId);
+      }
+      if (pageGuard.observer) {
+        pageGuard.observer.disconnect();
+      }
+      pageGuard = null;
+      window.__videoTrackerPageResumeGuard = null;
+    }
+    if (!pageGuard) {
+      pageGuard = {
+        active: false,
+        expiresAt: 0,
+        observer: null,
+        position: 0
+      };
+      try {
+        window.__videoTrackerPageResumeGuard = pageGuard;
+      } catch (_error) {
+        return;
+      }
+
+      const findGuardVideo = () => {
+        const videos = [];
+        const visitedRoots = new Set();
+        const visitedVideos = new Set();
+        const visit = (root) => {
+          if (!root || visitedRoots.has(root)) {
+            return;
+          }
+          visitedRoots.add(root);
+          for (const video of root.querySelectorAll("video")) {
+            if (!visitedVideos.has(video)) {
+              visitedVideos.add(video);
+              videos.push(video);
+            }
+          }
+          for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot) {
+              visit(element.shadowRoot);
+            }
+          }
+        };
+        visit(document);
+        return (
+          videos
+            .filter((video) => {
+              const duration = Number(video.duration);
+              const style = getComputedStyle(video);
+              return (
+                Number.isFinite(duration) &&
+                duration > 0 &&
+                style.display !== "none" &&
+                style.visibility !== "hidden"
+              );
+            })
+            .sort((left, right) => {
+              const leftCompatible =
+                !minimumCompatibleDuration ||
+                Number(left.duration) >= minimumCompatibleDuration;
+              const rightCompatible =
+                !minimumCompatibleDuration ||
+                Number(right.duration) >= minimumCompatibleDuration;
+              const score = (video) => {
+                const rect = video.getBoundingClientRect();
+                return (
+                  (Number(video.duration) >= minimumCompatibleDuration
+                    ? 1e12
+                    : 0) +
+                  (!video.paused && !video.ended ? 1e10 : 0) +
+                  Math.max(0, rect.width) * Math.max(0, rect.height)
+                );
+              };
+              return (
+                Number(rightCompatible) - Number(leftCompatible) ||
+                score(right) - score(left)
+              );
+            })[0] || null
+        );
+      };
+
+      const restoreGuardVideo = () => {
+        if (!pageGuard.active) {
+          return;
+        }
+        if (Date.now() > pageGuard.expiresAt) {
+          pageGuard.active = false;
+          if (pageGuard.timerId) {
+            clearInterval(pageGuard.timerId);
+          }
+          if (pageGuard.observer) {
+            pageGuard.observer.disconnect();
+          }
+          return;
+        }
+        const video = findGuardVideo();
+        if (!video) {
+          return;
+        }
+        const duration = Number(video.duration);
+        if (
+          !Number.isFinite(duration) ||
+          duration <= 0 ||
+          pageGuard.position >= duration - 0.5
+        ) {
+          return;
+        }
+        installResumeGuard(video, pageGuard.position);
+        const currentTime = Number(video.currentTime) || 0;
+        const resetThreshold = Math.min(
+          6,
+          Math.max(1.5, pageGuard.position * 0.03)
+        );
+        if (currentTime >= resetThreshold) {
+          return;
+        }
+        try {
+          video.currentTime = Math.min(
+            pageGuard.position,
+            Math.max(0, duration - 0.5)
+          );
+        } catch (_error) {
+          // The page may be replacing the media element.
+        }
+      };
+
+      const observer = new MutationObserver(restoreGuardVideo);
+      pageGuard.observer = observer;
+      const root = document.documentElement || document.body;
+      if (root) {
+        observer.observe(root, { childList: true, subtree: true });
+      }
+      pageGuard.timerId = setInterval(restoreGuardVideo, 500);
+    }
+
+    const now = Date.now();
+    const startingNewGuard =
+      !pageGuard.active ||
+      now > pageGuard.expiresAt ||
+      Math.abs(Number(pageGuard.position) - targetPosition) > 2;
+    if (startingNewGuard) {
+      pageGuard.active = true;
+    }
+    pageGuard.expiresAt = now + 30000;
+    pageGuard.position = targetPosition;
+  };
+
+  installPageResumeGuard(position);
+  installResumeGuard(bestVideo, position);
+
+  try {
+    bestVideo.__videoTrackerResumeTarget = true;
+  } catch (_error) {
+    // A page may expose a read-only video wrapper.
+  }
+
+  const currentTime = Number(bestVideo.currentTime) || 0;
+  const tolerance = Math.min(4, Math.max(1, position * 0.01));
+  const alreadyThere = currentTime + tolerance >= position;
+  if (!alreadyThere) {
+    try {
+      bestVideo.currentTime = position;
+    } catch (_error) {
+      return {
+        currentTime,
+        duration,
+        found: true,
+        reason: "seek-failed",
+        seeked: false
+      };
+    }
+  }
+
+  try {
+    bestVideo.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+  } catch (_error) {
+    // Native seeking already emits the standard media events.
+  }
+
+  if (bestVideo.paused) {
+    try {
+      const playResult = bestVideo.play();
+      if (playResult && typeof playResult.catch === "function") {
+        playResult.catch(() => {});
+      }
+    } catch (_error) {
+      // Autoplay can be denied; the stored position is still restored.
+    }
+  }
+
+  return {
+    currentTime: Number(bestVideo.currentTime) || currentTime,
+    duration,
+    found: true,
+    guardArmed: true,
+    pageGuardArmed: true,
+    readyState: Number(bestVideo.readyState) || 0,
+    seeked: true
+  };
+}
+
+async function seekTabPlayback(tabId, position, duration) {
+  let lastError = "";
+  let lastReason = "";
+  let lastMatch = null;
+  let stableSamples = 0;
+
+  for (let attempt = 0; attempt < RESUME_SEEK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const results = await executeScript({
+        args: [position, duration],
+        target: { allFrames: true, tabId },
+        world: "MAIN",
+        func: seekPlaybackInMainWorld
+      });
+      const allResults = results
+        .map((injection) => injection && injection.result)
+        .filter(Boolean);
+      const matches = allResults
+        .filter((result) => result.found && result.seeked)
+        .sort((left, right) => {
+          const leftDistance = Math.abs(
+            Number(left.currentTime) - Number(position)
+          );
+          const rightDistance = Math.abs(
+            Number(right.currentTime) - Number(position)
+          );
+          return leftDistance - rightDistance;
+        });
+      const bestMatch = matches[0] || null;
+      if (bestMatch) {
+        const matchDuration = Math.max(0, Number(bestMatch.duration) || 0);
+        const targetPosition = matchDuration
+          ? Math.min(position, Math.max(0, matchDuration - 0.5))
+          : position;
+        const matchCurrentTime = Math.max(
+          0,
+          Number(bestMatch.currentTime) || 0
+        );
+        const tolerance = Math.min(
+          4,
+          Math.max(1, targetPosition * 0.01)
+        );
+        if (matchCurrentTime + tolerance >= targetPosition) {
+          stableSamples += 1;
+          lastMatch = bestMatch;
+        } else {
+          stableSamples = 0;
+        }
+      } else {
+        stableSamples = 0;
+      }
+
+      const durationMismatch = allResults.find(
+        (result) => result.reason === "duration-mismatch"
+      );
+      if (durationMismatch) {
+        lastReason = "duration-mismatch";
+      }
+
+      if (stableSamples >= RESUME_SEEK_STABLE_SAMPLES && lastMatch) {
+        return {
+          currentTime: Math.max(
+            0,
+            Number(lastMatch.currentTime) || position
+          ),
+          duration: Math.max(0, Number(lastMatch.duration) || 0),
+          resumed: true
+        };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt + 1 < RESUME_SEEK_MAX_ATTEMPTS) {
+      await delay(RESUME_SEEK_RETRY_MS);
+    }
+  }
+
+  return { error: lastError || lastReason, resumed: false };
+}
+
+async function resumeShow(message) {
+  const showId = limitText(message.id, 80);
+  const requestedEpisodeId = limitText(
+    message.episodeId || message.episodeStorageKey,
+    180
+  );
+  if (!showId) {
+    throw new Error(I18n.t("追踪记录不存在"));
+  }
+
+  const [show, storedEpisodes] = await Promise.all([
+    getRecord(showId),
+    getAllEpisodes()
+  ]);
+  if (!show) {
+    throw new Error(I18n.t("追踪记录不存在"));
+  }
+
+  const episodes = synthesizeCurrentEpisodes([show], storedEpisodes);
+  const requestedEpisode = requestedEpisodeId
+    ? episodes.find(
+        (episode) =>
+          episode.id === requestedEpisodeId ||
+          episode.storageKey === requestedEpisodeId
+      ) || null
+    : null;
+  if (requestedEpisodeId && !requestedEpisode) {
+    throw new Error(I18n.t("追踪记录不存在"));
+  }
+  const selection = requestedEpisode
+    ? {
+        allComplete: episodes
+          .filter((episode) => episode.showId === show.id)
+          .every(resumeEpisodeIsComplete),
+        canResume: resumePositionIsUsable(requestedEpisode),
+        current: requestedEpisode,
+        target: requestedEpisode
+      }
+    : selectResumeTarget(show, episodes);
+  const target = selection.target;
+  const url = String(target.url || show.url || "");
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error(I18n.t("这条记录没有可打开的页面"));
+  }
+
+  let tab = await findReusableTab(url);
+  const reusedTab = Boolean(tab);
+  if (reusedTab) {
+    tab = await activateTab(tab);
+  } else {
+    tab = await createTab({ active: true, url });
+  }
+  if (!tab || !tab.id) {
+    throw new Error(I18n.t("无法打开观看页面"));
+  }
+
+  await waitForTabReady(tab.id, RESUME_TAB_LOAD_TIMEOUT_MS);
+  const storedPosition = Math.max(0, Number(target.position) || 0);
+  const duration = Math.max(0, Number(target.duration) || 0);
+  const shouldResume = selection.canResume;
+  const requestedPosition = shouldResume
+    ? Math.max(0, storedPosition - RESUME_REWIND_SECONDS)
+    : 0;
+  if (shouldResume) {
+    await setResumeOverlay(
+      tab.id,
+      I18n.t("正在恢复播放位置 {time}", {
+        time: Core.formatTime(requestedPosition)
+      })
+    );
+  }
+  const seekResult = shouldResume
+    ? await seekTabPlayback(tab.id, requestedPosition, duration)
+    : { resumed: false };
+  if (seekResult.resumed) {
+    await setResumeOverlay(
+      tab.id,
+      I18n.t("已恢复播放位置 {time}", {
+        time: Core.formatTime(seekResult.currentTime)
+      }),
+      1200
+    );
+    await maybeResumeTrackedTab(tab.id).catch(() => {});
+  } else if (shouldResume) {
+    await setResumeOverlay(
+      tab.id,
+      I18n.t("无法自动恢复播放位置，请拖动进度条到 {time}", {
+        time: Core.formatTime(requestedPosition)
+      }),
+      4200
+    );
+  }
+
+  return {
+    allComplete: selection.allComplete,
+    currentTime: seekResult.resumed
+      ? seekResult.currentTime
+      : storedPosition,
+    episodeLabel: target.episodeLabel || show.episodeLabel || "",
+    ok: true,
+    requestedPosition,
+    reusedTab,
+    resumed: Boolean(seekResult.resumed),
+    tabId: tab.id,
+    url
+  };
 }
 
 function createWatchPending(identity, now, paused) {
@@ -1600,6 +2904,13 @@ async function startTracking(message) {
       id: showId,
       name: message.name || snapshot.title
     }),
+    maxWatchedEpisodeLabel: existingRecord?.maxWatchedEpisodeLabel,
+    maxWatchedEpisodeNumber: Math.max(
+      Number(existingRecord?.maxWatchedEpisodeNumber) || 0,
+      Core.parseEpisodeNumber(
+        message.episodeLabel || snapshot.episodeLabel
+      ) || 0
+    ),
     pinned: Boolean(existingRecord && existingRecord.pinned),
     pinnedAt: (existingRecord && existingRecord.pinnedAt) || 0
   });
@@ -1686,6 +2997,7 @@ async function startTracking(message) {
   await saveSessions();
   setBadge(tabId, true);
   createTrackingAlarm();
+  await updateLatestUpdateBadge().catch(() => {});
 
   return {
     deferredSync: !guardPending && !writeResult.synced,
@@ -1825,6 +3137,9 @@ async function updateTrackedTab(tabId, options) {
     updatedAt: now,
     url: snapshot.url || record.url
   });
+  const maxWatchedIncreased =
+    Number(updated.maxWatchedEpisodeNumber || 0) >
+    Number(record.maxWatchedEpisodeNumber || 0);
 
   if (
     !settings.force &&
@@ -1856,6 +3171,9 @@ async function updateTrackedTab(tabId, options) {
   session.lastSyncAt = now;
   sessions[tabId] = session;
   await saveSessions();
+  if (maxWatchedIncreased) {
+    await updateLatestUpdateBadge().catch(() => {});
+  }
 
   return {
     active: true,
@@ -1939,11 +3257,13 @@ async function deleteShow(message) {
   const syncKeys = Object.keys(syncAll).filter(
     (key) =>
       key === syncKeyFor(showId) ||
+      key === latestSyncKeyFor(showId) ||
       key.startsWith(`${EPISODE_SYNC_PREFIX}${showId}.`)
   );
   const localKeys = Object.keys(localAll).filter(
     (key) =>
       key === localKeyFor(showId) ||
+      key === latestLocalKeyFor(showId) ||
       key.startsWith(`${EPISODE_LOCAL_PREFIX}${showId}.`)
   );
   if (syncKeys.length) {
@@ -1961,6 +3281,7 @@ async function deleteShow(message) {
     }
   }
   await saveSessions();
+  await updateLatestUpdateBadge().catch(() => {});
   return { ok: true };
 }
 
@@ -2051,10 +3372,17 @@ async function getAppState(message) {
   if (tabId) {
     await maybeResumeTrackedTab(tabId).catch(() => {});
   }
-  const [records, sessionsResult] = await Promise.all([
+  const [rawRecords, storedEpisodes, latestStates, sessionsResult] =
+    await Promise.all([
     getAllRecords(),
+    getAllEpisodes(),
+    getAllLatestEpisodeStates(),
     loadSessions()
   ]);
+  const records = presentRecordsWithLatest(
+    await reconcileMaxWatchedEpisodes(rawRecords, storedEpisodes),
+    latestStates
+  );
   const localState = await storageGet(chrome.storage.local, SYNC_ISSUE_KEY).catch(
     () => ({})
   );
@@ -2078,8 +3406,17 @@ function createTrackingAlarm() {
   }
 }
 
+function createLatestEpisodeAlarm() {
+  if (chrome.alarms && chrome.alarms.create) {
+    chrome.alarms.create(LATEST_EPISODE_ALARM, {
+      periodInMinutes: LATEST_EPISODE_ALARM_PERIOD_MINUTES
+    });
+  }
+}
+
 async function heartbeat() {
   await synchronizeStorage().catch(() => {});
+  await updateLatestUpdateBadge().catch(() => {});
   const sessions = await loadSessions();
   const trackedTabs = Object.keys(sessions).map(Number).filter(Boolean);
   if (!trackedTabs.length) {
@@ -2103,6 +3440,8 @@ async function handleMessage(message) {
       return getAppState(message);
     case "VT_GET_LIBRARY_STATE":
       return getLibraryState();
+    case "VT_CHECK_LATEST_EPISODES":
+      return checkLatestEpisodes({ force: true });
     case "VT_EXPORT_BACKUP":
       return exportBackup();
     case "VT_IMPORT_BACKUP":
@@ -2123,6 +3462,8 @@ async function handleMessage(message) {
       return touchDeviceHeartbeat({ force: true });
     case "VT_GET_SNAPSHOT":
       return getTabSnapshot(Number(message.tabId), { fresh: true });
+    case "VT_RESUME_SHOW":
+      return resumeShow(message);
     case "VT_START_TRACKING":
       return startTracking(message);
     case "VT_STOP_TRACKING":
@@ -2209,6 +3550,8 @@ chrome.windows.onFocusChanged.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === TRACKING_ALARM) {
     heartbeat().catch(() => {});
+  } else if (alarm.name === LATEST_EPISODE_ALARM) {
+    checkLatestEpisodes().catch(() => {});
   }
 });
 
@@ -2217,13 +3560,17 @@ chrome.runtime.onInstalled.addListener(async () => {
     [LOCAL_SCHEMA_KEY]: SCHEMA_VERSION
   }).catch(() => {});
   createTrackingAlarm();
+  createLatestEpisodeAlarm();
   await resumeActiveTrackedTabs();
   await heartbeat();
+  await checkLatestEpisodes().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   createTrackingAlarm();
+  createLatestEpisodeAlarm();
   resumeActiveTrackedTabs()
     .then(() => heartbeat())
+    .then(() => checkLatestEpisodes())
     .catch(() => {});
 });

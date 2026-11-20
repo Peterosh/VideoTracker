@@ -10,6 +10,8 @@ test("extracts common Chinese and international episode labels", () => {
   assert.equal(Core.extractEpisodeLabel("Stranger Things S04E07"), "S04E07");
   assert.equal(Core.extractEpisodeLabel("Episode 8 - The Finale"), "EP 8");
   assert.equal(Core.extractEpisodeLabel("沧元图 101集-Omofun动漫"), "第 101 集");
+  assert.equal(Core.extractEpisodeLabel("沧元图 先行104集-Omofun动漫"), "第 104 集");
+  assert.equal(Core.extractEpisodeLabel("沧元图 先行 105 集"), "第 105 集");
   assert.equal(Core.extractEpisodeLabel("没有集数"), "");
 });
 
@@ -18,6 +20,8 @@ test("parses episode numbers for regression guards", () => {
   assert.equal(Core.parseEpisodeNumber("第一百零一集"), 101);
   assert.equal(Core.parseEpisodeNumber("S04E07"), 7);
   assert.equal(Core.parseEpisodeNumber("EP 12"), 12);
+  assert.equal(Core.parseEpisodeNumber("沧元图 先行104集"), 104);
+  assert.equal(Core.parseEpisodeNumber("沧元图 先行 105 集"), 105);
   assert.equal(Core.parseEpisodeNumber("没有集数"), null);
 });
 
@@ -32,6 +36,7 @@ test("cleans site titles but keeps the drama name", () => {
   );
   assert.equal(Core.cleanSeriesTitle("Episode 3"), "Episode 3");
   assert.equal(Core.cleanSeriesTitle("沧元图 101集-Omofun动漫"), "沧元图");
+  assert.equal(Core.cleanSeriesTitle("沧元图 先行104集-Omofun动漫"), "沧元图");
 });
 
 test("derives stable adapter series keys", () => {

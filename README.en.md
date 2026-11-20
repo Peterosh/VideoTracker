@@ -4,6 +4,8 @@
 
 A browser extension for Microsoft Edge and Google Chrome that records the current episode and playback position of TV series and anime, then synchronizes watch history across devices.
 
+**Microsoft Edge Add-ons:** [Install VideoTracker](https://microsoftedge.microsoft.com/addons/detail/%E5%89%A7%E8%BF%B9-videotracker/edpemnlileelclgelhbgjdlglhbeffjb)
+
 ## Features
 
 - Automatically detects HTML5 videos, show titles, episode labels, and playback time, including players inside iframes.
@@ -11,9 +13,12 @@ A browser extension for Microsoft Edge and Google Chrome that records the curren
 - Start or stop tracking the current episode with one click.
 - Reopening a saved show in a new tab or after restarting the browser automatically resumes tracking. A show explicitly stopped by the user is not resumed automatically.
 - Automatically saves playback position and updates the record when the episode changes.
+- Records the highest episode ever watched for each show and displays the latest episode found on the site in both the popup and management page.
+- While the browser is running, checks tracked shows for new episodes every hour and shows a New tag plus a `NEW` badge on the extension icon.
 - Treats an episode as complete after 80% of the video has played naturally, so ending credits can be skipped. Seeking directly to the end is not treated as natural completion.
 - Filters common ad overlays, short Tencent Video ads, source changes, and abnormal durations. Ad playback does not overwrite content progress.
 - The management page shows the playback position, total duration, progress, watch time, and completion status for every episode.
+- Continue Watching opens the most recent unfinished episode and resumes three seconds before the saved position. If a site blocks automatic positioning, the page still opens normally.
 - Watch History and Devices are separate management views. Language and network-information controls are available in the header.
 - Episode records store the viewing device name, browser, operating system, LAN IP, and public IP.
 - Supports Chinese and English interfaces and follows the browser language by default.
@@ -30,6 +35,10 @@ A browser extension for Microsoft Edge and Google Chrome that records the curren
 ## Installation
 
 ### Microsoft Edge
+
+Install from [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/%E5%89%A7%E8%BF%B9-videotracker/edpemnlileelclgelhbgjdlglhbeffjb).
+
+Developer installation:
 
 1. Open `edge://extensions/`.
 2. Enable Developer mode.
@@ -57,11 +66,20 @@ Keep one installed copy of the extension. To update it, click Reload instead of 
 
 1. Click the list icon in the top-right corner of the extension popup.
 2. Select a show from the left panel.
-3. Review each episode's playback position, total duration, progress, and viewing device.
+3. Review the highest watched episode, latest episode found on the site, and each episode's playback position, total duration, progress, and viewing device.
 4. Filter records with All, Watching, and Completed.
-5. Use the buttons next to an episode to open its playback page or delete the episode record.
-6. Use Delete Show to delete a complete show and all of its episode records.
-7. Use the pin button next to a show to pin or unpin it.
+5. Click Continue Watching next to the show title to open the most recent unfinished episode at the saved playback position.
+6. Use the button next to an episode to open it at the saved position; use the delete button to remove that episode record.
+7. Use Delete Show to delete a complete show and all of its episode records.
+8. Use the pin button next to a show to pin or unpin it.
+
+### Check for New Episodes
+
+1. Keep the browser running. The extension checks tracked shows after installation, when the browser starts, and once per hour afterward.
+2. You do not need to open the popup or management page. When a new episode is found, the tracked list shows New and the extension icon shows a `NEW` badge.
+3. The latest episode number only moves upward and will not regress because a page temporarily displays older content.
+4. Some sites render episode lists with JavaScript, block background requests, or require additional verification. In those cases the check may fail; the management page shows the reason while keeping the previously detected latest episode.
+5. Background checks cannot run while the browser is completely closed.
 
 ### Synchronization
 

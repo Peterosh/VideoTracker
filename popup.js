@@ -486,6 +486,49 @@
     return String(label || "V").trim().charAt(0).toUpperCase() || "V";
   }
 
+  function maxWatchedLabel(record) {
+    const label =
+      record.maxWatchedEpisodeLabel ||
+      (Number(record.maxWatchedEpisodeNumber) > 0
+        ? Core.episodeLabelFromNumber(record.maxWatchedEpisodeNumber)
+        : "");
+    return label ? I18n.episodeLabel(label) : "--";
+  }
+
+  function latestEpisodeLabel(record) {
+    const label =
+      record.latestEpisodeLabel ||
+      (Number(record.latestEpisodeNumber) > 0
+        ? Core.episodeLabelFromNumber(record.latestEpisodeNumber)
+        : "");
+    return label ? I18n.episodeLabel(label) : I18n.t("未知");
+  }
+
+  function localizeLatestCheckError(error) {
+    const source = String(error || "").trim();
+    if (!source) {
+      return "";
+    }
+    const statusMatch = source.match(/^网站返回错误\s+(\d+)$/);
+    if (statusMatch) {
+      return I18n.t("网站返回错误 {status}", { status: statusMatch[1] });
+    }
+    return I18n.t(source);
+  }
+
+  function latestCheckText(record) {
+    const error = localizeLatestCheckError(record.latestCheckError);
+    if (error) {
+      return `${I18n.t("检查失败")}：${error}`;
+    }
+    if (record.latestCheckedAt) {
+      return I18n.t("最近检查 {time}", {
+        time: I18n.relativeTime(record.latestCheckedAt)
+      });
+    }
+    return I18n.t("尚未检查网站更新");
+  }
+
   function applyPendingPinState(records) {
     return records.map((record) => {
       if (!state.pinPending.has(record.id)) {
@@ -513,6 +556,10 @@
           record.name,
           record.pageTitle,
           record.episodeLabel,
+          record.maxWatchedEpisodeLabel,
+          record.maxWatchedEpisodeNumber,
+          record.latestEpisodeLabel,
+          record.latestEpisodeNumber,
           record.siteLabel
         ]
           .filter(Boolean)
@@ -551,7 +598,14 @@
       records: visibleRecords.map((record) => ({
         duration: record.duration,
         episodeLabel: record.episodeLabel,
+        hasNewEpisode: Boolean(record.hasNewEpisode),
         id: record.id,
+        latestCheckedAt: Number(record.latestCheckedAt) || 0,
+        latestCheckError: record.latestCheckError || "",
+        latestEpisodeLabel: record.latestEpisodeLabel || "",
+        latestEpisodeNumber: Number(record.latestEpisodeNumber) || 0,
+        maxWatchedEpisodeLabel: record.maxWatchedEpisodeLabel || "",
+        maxWatchedEpisodeNumber: Number(record.maxWatchedEpisodeNumber) || 0,
         name: record.name,
         pending: state.pinPending.has(record.id),
         pinned: Boolean(record.pinned),
@@ -598,6 +652,8 @@
         );
         const isCurrent = record.id === activeId;
         const pinPending = state.pinPending.has(record.id);
+        const highestLabel = maxWatchedLabel(record);
+        const latestLabel = latestEpisodeLabel(record);
         return `
           <article class="show-row">
             <span
@@ -627,6 +683,26 @@
                 )}</span>
                 <span class="meta-separator">·</span>
                 <span>${Math.round(progress)}%</span>
+              </span>
+              <span
+                class="show-meta show-meta-secondary"
+                title="${escapeAttr(latestCheckText(record))}"
+              >
+                <span class="show-meta-item">${escapeHtml(
+                  I18n.t("最高 {episode}", { episode: highestLabel })
+                )}</span>
+                <span class="meta-separator">·</span>
+                <span class="show-meta-item">${escapeHtml(
+                  I18n.t("最新 {episode}", { episode: latestLabel })
+                )}</span>
+                ${
+                  record.hasNewEpisode
+                    ? `<span
+                        class="new-episode-tag"
+                        aria-label="${escapeAttr(I18n.t("有新集"))}"
+                      >${escapeHtml(I18n.t("新集"))}</span>`
+                    : ""
+                }
               </span>
               ${progressMarkup(record.position, record.duration, true)}
             </button>
@@ -974,12 +1050,37 @@
       return;
     }
 
-    const tab = await createTab(record.url);
-    if (!tab) {
-      showToast(I18n.t("无法打开观看页面"), true);
-      return;
+    try {
+      const response = await sendRuntime({
+        id: record.id,
+        type: "VT_RESUME_SHOW"
+      });
+      if (!response.ok) {
+        throw new Error(response.error || I18n.t("无法打开观看页面"));
+      }
+      const episode = I18n.episodeLabel(
+        response.episodeLabel || record.episodeLabel || "本集"
+      );
+      if (response.resumed) {
+        showToast(
+          I18n.t("已从 {time} 继续播放{episode}", {
+            episode,
+            time: Core.formatTime(response.currentTime)
+          })
+        );
+      } else if (Number(response.requestedPosition) > 0) {
+        showToast(
+          I18n.t("{episode}已打开，网站暂不支持自动定位", {
+            episode
+          })
+        );
+      } else {
+        showToast(I18n.t("已打开{episode}", { episode }));
+      }
+      window.close();
+    } catch (error) {
+      showToast(error.message || I18n.t("无法打开观看页面"), true);
     }
-    window.close();
   }
 
   function openEditDialog(recordId) {
@@ -1220,6 +1321,8 @@
           (key) =>
             key.startsWith("vt.show.") ||
             key.startsWith("vt.local.show.") ||
+            key.startsWith("vt.latest.") ||
+            key.startsWith("vt.local.latest.") ||
             key === "vt.syncIssue"
         );
         if (!relevant || !state.tabId) {
